@@ -5,6 +5,8 @@ import smtplib
 import imaplib
 import email
 from email.header import decode_header
+from email.utils import parsedate_to_datetime
+from datetime import datetime, timezone
 import aiohttp
 import dns.resolver
 from email.mime.text import MIMEText
@@ -469,6 +471,16 @@ async def run_task(task_id, acc_id, items, chat_id, status_chat_id=None, status_
             update_sent(task_id)
             sent += 1
 
+            add_conversation_message(
+                acc_id,
+                email,
+                "outgoing",
+                subject,
+                message,
+                item.get("adlink", ""),
+                created_at=datetime.now(timezone.utc).isoformat()
+            )
+
         # LOG FILE
         line = f"{email} | {item['title']} | {item['price']} | {item['img_url']} | {item['adlink']}\n"
         f.write(line)
@@ -582,6 +594,27 @@ def _extract_text_body(msg):
     return ""
 
 
+def _parse_date(date_str):
+    try:
+        dt = parsedate_to_datetime(date_str)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc).isoformat()
+    except Exception:
+        return None
+
+
+def _format_timestamp(ts):
+    if not ts:
+        return "неизвестно"
+
+    try:
+        dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        return dt.strftime("%d.%m.%Y %H:%M")
+    except Exception:
+        return ts
+
+
 def fetch_unseen_messages(acc):
     messages = []
     with imaplib.IMAP4_SSL("imap.gmail.com") as imap:
@@ -602,11 +635,14 @@ def fetch_unseen_messages(acc):
             from_email = email.utils.parseaddr(msg.get("From", ""))[1]
             body = _extract_text_body(msg)
             preview = body.strip().splitlines()[0][:200] if body else ""
+            received_at = _parse_date(msg.get("Date"))
             messages.append({
                 "message_id": message_id,
                 "from_email": from_email,
                 "subject": subject,
-                "preview": preview
+                "preview": preview,
+                "body": body,
+                "received_at": received_at
             })
 
     return messages
@@ -627,17 +663,45 @@ async def check_inboxes():
                         msg_data["message_id"],
                         msg_data["from_email"],
                         msg_data["subject"],
-                        msg_data["preview"]
+                        msg_data["preview"],
+                        msg_data.get("body"),
+                        msg_data.get("received_at")
                     )
 
                     if not incoming_id:
                         continue
 
+                    adlink = last_adlink_by_email(msg_data["from_email"])
+
+                    add_conversation_message(
+                        acc["id"],
+                        msg_data["from_email"],
+                        "incoming",
+                        msg_data["subject"],
+                        msg_data.get("body") or msg_data["preview"],
+                        adlink,
+                        msg_data["message_id"],
+                        msg_data.get("received_at")
+                    )
+
+                    history = get_conversation(msg_data["from_email"], limit=5)
+
+                    hist_lines = []
+                    for h in history:
+                        icon = "➡️" if h["direction"] == "outgoing" else "⬅️"
+                        snippet = (h["body"] or "").strip().replace("\n", " ")[:150]
+                        hist_lines.append(
+                            f"{icon} [{_format_timestamp(h['created_at'])}] {snippet or '(пусто)'}"
+                        )
+
+                    history_text = "\n".join(hist_lines) if hist_lines else "История пуста."
+
                     text = (
-                        f"📩 Новое письмо\n"
-                        f"От: {msg_data['from_email']}\n"
-                        f"Тема: {msg_data['subject']}\n\n"
-                        f"{msg_data['preview'] or 'Без текста'}"
+                        f"📩 Новое письмо | {msg_data['from_email']}\n\n"
+                        f"🔗 {adlink or 'Ссылка не найдена'}\n"
+                        f"🕒 Ответ получен: {_format_timestamp(msg_data.get('received_at'))}\n\n"
+                        f"💬 Текст сообщения:\n\n{msg_data.get('body') or msg_data['preview'] or 'Без текста'}\n\n"
+                        f"📜 История:\n{history_text}"
                     )
 
                     if MAIN_CHAT_ID:
@@ -682,6 +746,15 @@ async def send_reply(msg: types.Message, state: FSMContext):
     body = msg.text
 
     if await send_email(incoming["from_email"], subject, body, acc):
+        add_conversation_message(
+            acc["id"],
+            incoming["from_email"],
+            "outgoing",
+            subject,
+            body,
+            last_adlink_by_email(incoming["from_email"]),
+            created_at=datetime.now(timezone.utc).isoformat()
+        )
         await msg.answer("Ответ отправлен!", reply_markup=main_menu())
     else:
         await msg.answer("Не удалось отправить ответ.")

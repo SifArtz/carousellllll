@@ -191,12 +191,16 @@ def incoming_exists(message_id):
     return exists
 
 
-def add_incoming_message(account_id, message_id, from_email, subject, body_preview):
+def add_incoming_message(account_id, message_id, from_email, subject, body_preview, body_full=None, received_at=None):
     conn = db()
     cur = conn.cursor()
     cur.execute(
-        "INSERT OR IGNORE INTO incoming_messages (account_id, message_id, from_email, subject, body_preview) VALUES (?, ?, ?, ?, ?)",
-        (account_id, message_id, from_email, subject, body_preview)
+        """
+        INSERT OR IGNORE INTO incoming_messages
+        (account_id, message_id, from_email, subject, body_preview, body_full, received_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (account_id, message_id, from_email, subject, body_preview, body_full, received_at)
     )
     conn.commit()
     new_id = cur.lastrowid
@@ -220,4 +224,85 @@ def get_incoming(incoming_id):
         "from_email": r[3],
         "subject": r[4],
         "body_preview": r[5],
+        "body_full": r[6],
+        "received_at": r[7],
     }
+
+
+# ==========================================================
+# CONVERSATION LOG
+# ==========================================================
+def add_conversation_message(account_id, email, direction, subject, body, adlink=None, message_id=None, created_at=None):
+    conn = db()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        INSERT INTO conversation_messages
+        (account_id, email, direction, subject, body, adlink, created_at, message_id)
+        VALUES (?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP), ?)
+        """,
+        (account_id, email, direction, subject, body, adlink, created_at, message_id)
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_conversation(email, limit=10):
+    conn = db()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT email, direction, subject, body, adlink, created_at
+        FROM conversation_messages
+        WHERE email=?
+        ORDER BY datetime(created_at) ASC, id ASC
+        """,
+        (email,)
+    )
+    rows = cur.fetchall()
+    conn.close()
+
+    items = [
+        {
+            "email": r[0],
+            "direction": r[1],
+            "subject": r[2],
+            "body": r[3],
+            "adlink": r[4],
+            "created_at": r[5],
+        }
+        for r in rows
+    ]
+
+    if limit:
+        return items[-limit:]
+
+    return items
+
+
+def last_adlink_by_email(email):
+    conn = db()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT adlink FROM conversation_messages
+        WHERE email=? AND adlink IS NOT NULL AND adlink != ''
+        ORDER BY datetime(created_at) DESC, id DESC
+        LIMIT 1
+        """,
+        (email,)
+    )
+    row = cur.fetchone()
+    conn.close()
+    if row:
+        return row[0]
+
+    conn = db()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT adlink FROM logs WHERE email=? ORDER BY id DESC LIMIT 1",
+        (email,)
+    )
+    row = cur.fetchone()
+    conn.close()
+    return row[0] if row else ""

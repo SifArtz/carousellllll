@@ -67,6 +67,35 @@ def init_db():
             from_email TEXT,
             subject TEXT,
             body_preview TEXT,
+            body_full TEXT,
+            received_at TEXT,
+            FOREIGN KEY(account_id) REFERENCES accounts(id)
+        )
+    """)
+
+    # Колонки для обратной совместимости
+    try:
+        cur.execute("ALTER TABLE incoming_messages ADD COLUMN body_full TEXT")
+    except sqlite3.OperationalError:
+        pass
+
+    try:
+        cur.execute("ALTER TABLE incoming_messages ADD COLUMN received_at TEXT")
+    except sqlite3.OperationalError:
+        pass
+
+    # ---------------- CONVERSATION LOG ----------------
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS conversation_messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            account_id INTEGER,
+            email TEXT,
+            direction TEXT,
+            subject TEXT,
+            body TEXT,
+            adlink TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            message_id TEXT,
             FOREIGN KEY(account_id) REFERENCES accounts(id)
         )
     """)
