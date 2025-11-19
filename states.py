@@ -18,3 +18,7 @@ class SetDelay(StatesGroup):
 
 class UploadTaskFile(StatesGroup):
     waiting_file = State()
+
+
+class ReplyMessage(StatesGroup):
+    waiting_text = State()

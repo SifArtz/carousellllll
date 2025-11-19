@@ -58,5 +58,18 @@ def init_db():
         )
     """)
 
+    # ---------------- INCOMING EMAILS ----------------
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS incoming_messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            account_id INTEGER,
+            message_id TEXT UNIQUE,
+            from_email TEXT,
+            subject TEXT,
+            body_preview TEXT,
+            FOREIGN KEY(account_id) REFERENCES accounts(id)
+        )
+    """)
+
     conn.commit()
     conn.close()

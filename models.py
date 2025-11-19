@@ -157,3 +157,47 @@ def log_item(task_id, email, title, price, img_url, adlink):
     )
     conn.commit()
     conn.close()
+
+
+# ==========================================================
+# INCOMING EMAILS
+# ==========================================================
+def incoming_exists(message_id):
+    conn = db()
+    cur = conn.cursor()
+    cur.execute("SELECT 1 FROM incoming_messages WHERE message_id=?", (message_id,))
+    exists = cur.fetchone() is not None
+    conn.close()
+    return exists
+
+
+def add_incoming_message(account_id, message_id, from_email, subject, body_preview):
+    conn = db()
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT OR IGNORE INTO incoming_messages (account_id, message_id, from_email, subject, body_preview) VALUES (?, ?, ?, ?, ?)",
+        (account_id, message_id, from_email, subject, body_preview)
+    )
+    conn.commit()
+    new_id = cur.lastrowid
+    conn.close()
+    return new_id
+
+
+def get_incoming(incoming_id):
+    conn = db()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM incoming_messages WHERE id=?", (incoming_id,))
+    r = cur.fetchone()
+    conn.close()
+    if not r:
+        return None
+
+    return {
+        "id": r[0],
+        "account_id": r[1],
+        "message_id": r[2],
+        "from_email": r[3],
+        "subject": r[4],
+        "body_preview": r[5],
+    }
