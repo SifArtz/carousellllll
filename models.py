@@ -229,6 +229,48 @@ def get_incoming(incoming_id):
     }
 
 
+def get_latest_incoming(limit=6, offset=0):
+    conn = db()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT im.id, im.account_id, im.from_email, im.subject, COALESCE(im.body_full, im.body_preview), im.received_at
+        FROM incoming_messages im
+        JOIN (
+            SELECT from_email, MAX(COALESCE(received_at, '')) as max_received, MAX(id) as max_id
+            FROM incoming_messages
+            GROUP BY from_email
+        ) last ON im.id = last.max_id
+        ORDER BY datetime(COALESCE(im.received_at, '1970-01-01')) DESC, im.id DESC
+        LIMIT ? OFFSET ?
+        """,
+        (limit, offset)
+    )
+    rows = cur.fetchall()
+    conn.close()
+
+    return [
+        {
+            "incoming_id": r[0],
+            "account_id": r[1],
+            "from_email": r[2],
+            "subject": r[3],
+            "body": r[4],
+            "received_at": r[5],
+        }
+        for r in rows
+    ]
+
+
+def count_unique_senders():
+    conn = db()
+    cur = conn.cursor()
+    cur.execute("SELECT COUNT(DISTINCT from_email) FROM incoming_messages")
+    row = cur.fetchone()
+    conn.close()
+    return row[0] if row else 0
+
+
 # ==========================================================
 # CONVERSATION LOG
 # ==========================================================

@@ -4,6 +4,8 @@ import logging
 import smtplib
 import imaplib
 import email
+import os
+import tempfile
 from email.header import decode_header
 from email.utils import parsedate_to_datetime
 from datetime import datetime, timezone
@@ -53,6 +55,14 @@ def _format_task_text(task):
     )
 
 
+def _paginate(items, page, per_page):
+    total_pages = max(1, (len(items) + per_page - 1) // per_page)
+    page = max(1, min(page, total_pages))
+    start = (page - 1) * per_page
+    end = start + per_page
+    return items[start:end], page, total_pages
+
+
 # ---------------------------------------------------------
 # /start
 # ---------------------------------------------------------
@@ -86,6 +96,19 @@ async def click_start_task(call: types.CallbackQuery):
     await call.message.edit_text("Выберите аккаунт:", reply_markup=accounts_menu(accounts))
 
 
+@dp.callback_query_handler(lambda c: c.data.startswith("accounts_page_"))
+async def accounts_page(call: types.CallbackQuery):
+    page = int(call.data.split("_")[2])
+    accounts = get_accounts()
+    if not accounts:
+        return await call.message.edit_text(
+            "Нет аккаунтов. Добавьте почту.",
+            reply_markup=main_menu()
+        )
+
+    await call.message.edit_text("Выберите аккаунт:", reply_markup=accounts_menu(accounts, page=page))
+
+
 @dp.callback_query_handler(lambda c: c.data == "add_account")
 async def add_acc_click(call: types.CallbackQuery):
     await AddAccount.email.set()
@@ -102,6 +125,16 @@ async def tasks_click(call: types.CallbackQuery):
     await call.message.edit_text("Список задач:", reply_markup=tasks_menu(tasks))
 
 
+@dp.callback_query_handler(lambda c: c.data.startswith("tasks_page_"))
+async def tasks_page(call: types.CallbackQuery):
+    page = int(call.data.split("_")[2])
+    tasks = get_tasks()
+    if not tasks:
+        return await call.message.edit_text("Задач нет.", reply_markup=main_menu())
+
+    await call.message.edit_text("Список задач:", reply_markup=tasks_menu(tasks, page=page))
+
+
 @dp.callback_query_handler(lambda c: c.data == "settings")
 async def settings_click(call: types.CallbackQuery):
     await call.message.edit_text("Настройки:", reply_markup=settings_menu())
@@ -110,6 +143,46 @@ async def settings_click(call: types.CallbackQuery):
 @dp.callback_query_handler(lambda c: c.data == "back")
 async def back_click(call: types.CallbackQuery):
     await call.message.edit_text("Главное меню:", reply_markup=main_menu())
+
+
+@dp.callback_query_handler(lambda c: c.data == "noop")
+async def noop(call: types.CallbackQuery):
+    await call.answer()
+
+
+async def _render_inbox_page(message_obj, page: int = 1):
+    per_page = 6
+    total = count_unique_senders()
+    if not total:
+        if isinstance(message_obj, types.CallbackQuery):
+            return await message_obj.message.edit_text("Входящих писем нет.", reply_markup=main_menu())
+        return await message_obj.answer("Входящих писем нет.", reply_markup=main_menu())
+
+    total_pages = max(1, (total + per_page - 1) // per_page)
+    page = max(1, min(page, total_pages))
+    offset = (page - 1) * per_page
+    items = get_latest_incoming(limit=per_page, offset=offset)
+    if isinstance(message_obj, types.CallbackQuery):
+        await message_obj.message.edit_text(
+            "Входящие письма:",
+            reply_markup=inbox_menu(items, page=page, per_page=per_page, total_count=total)
+        )
+    else:
+        await message_obj.answer(
+            "Входящие письма:",
+            reply_markup=inbox_menu(items, page=page, per_page=per_page, total_count=total)
+        )
+
+
+@dp.callback_query_handler(lambda c: c.data == "inbox")
+async def inbox_click(call: types.CallbackQuery):
+    await _render_inbox_page(call, page=1)
+
+
+@dp.callback_query_handler(lambda c: c.data.startswith("inbox_page_"))
+async def inbox_page(call: types.CallbackQuery):
+    page = int(call.data.split("_")[2])
+    await _render_inbox_page(call, page=page)
 
 
 # ---------------------------------------------------------
@@ -224,6 +297,25 @@ async def start_task(call, state):
     await call.message.edit_text("Отправьте .txt файл с JSON данными.")
 
 
+@dp.callback_query_handler(lambda c: c.data.startswith("inbox_view_"))
+async def inbox_view(call: types.CallbackQuery):
+    incoming_id = int(call.data.split("_")[2])
+    incoming = get_incoming(incoming_id)
+    if not incoming:
+        return await call.answer("Письмо не найдено", show_alert=True)
+
+    adlink = last_adlink_by_email(incoming["from_email"])
+    body = incoming.get("body_full") or incoming.get("body_preview") or "Без текста"
+    text = (
+        f"📩 Письмо | {incoming['from_email']}\n\n"
+        f"🔗 {adlink or 'Ссылка не найдена'}\n"
+        f"🕒 Ответ получен: {_format_timestamp(incoming.get('received_at'))}\n\n"
+        f"💬 Текст сообщения:\n\n{body}"
+    )
+
+    await call.message.edit_text(text, reply_markup=incoming_actions(incoming_id))
+
+
 # ---------------------------------------------------------
 #   Получение файла
 # ---------------------------------------------------------
@@ -246,12 +338,13 @@ async def file_received(msg, state):
         if missing:
             return await msg.answer(f"Строка {idx}: отсутствуют поля: {', '.join(missing)}")
 
+        adlink = v.get("adlink") or v.get("adLink") or v.get("ad_link") or ""
         items.append({
             "title": v["title"],
             "price": v["price"],
             "img_url": v["img_url"],
             "seller": v["seller"],
-            "adlink": v.get("adlink", "")
+            "adlink": adlink
         })
 
     if not items:
@@ -594,6 +687,35 @@ def _extract_text_body(msg):
     return ""
 
 
+def _clean_incoming_body(body: str) -> str:
+    if not body:
+        return body
+
+    lines = body.splitlines()
+    cleaned = []
+    stop_markers = [" wrote:", "написал", "пишет"]
+
+    for line in lines:
+        stripped = line.strip()
+        lower_line = stripped.lower()
+
+        if stripped.startswith(">"):
+            break
+        if lower_line.startswith("on ") and "wrote:" in lower_line:
+            break
+        if any(marker in lower_line for marker in stop_markers) and lower_line.endswith(":"):
+            break
+        if stripped.startswith("--"):
+            break
+        if stripped.startswith("чт,") or stripped.startswith("сб,") or stripped.startswith("вс,"):
+            break
+
+        cleaned.append(line)
+
+    cleaned_text = "\n".join(cleaned).strip()
+    return cleaned_text or body.strip()
+
+
 def _parse_date(date_str):
     try:
         dt = parsedate_to_datetime(date_str)
@@ -633,7 +755,8 @@ def fetch_unseen_messages(acc):
             message_id = msg.get("Message-ID", num.decode())
             subject = _decode_mime_words(msg.get("Subject", "(без темы)"))
             from_email = email.utils.parseaddr(msg.get("From", ""))[1]
-            body = _extract_text_body(msg)
+            raw_body = _extract_text_body(msg)
+            body = _clean_incoming_body(raw_body)
             preview = body.strip().splitlines()[0][:200] if body else ""
             received_at = _parse_date(msg.get("Date"))
             messages.append({
@@ -684,36 +807,69 @@ async def check_inboxes():
                         msg_data.get("received_at")
                     )
 
-                    history = get_conversation(msg_data["from_email"], limit=5)
-
-                    hist_lines = []
-                    for h in history:
-                        icon = "➡️" if h["direction"] == "outgoing" else "⬅️"
-                        snippet = (h["body"] or "").strip().replace("\n", " ")[:150]
-                        hist_lines.append(
-                            f"{icon} [{_format_timestamp(h['created_at'])}] {snippet or '(пусто)'}"
-                        )
-
-                    history_text = "\n".join(hist_lines) if hist_lines else "История пуста."
-
                     text = (
                         f"📩 Новое письмо | {msg_data['from_email']}\n\n"
                         f"🔗 {adlink or 'Ссылка не найдена'}\n"
                         f"🕒 Ответ получен: {_format_timestamp(msg_data.get('received_at'))}\n\n"
-                        f"💬 Текст сообщения:\n\n{msg_data.get('body') or msg_data['preview'] or 'Без текста'}\n\n"
-                        f"📜 История:\n{history_text}"
+                        f"💬 Текст сообщения:\n\n{msg_data.get('body') or msg_data['preview'] or 'Без текста'}"
                     )
 
                     if MAIN_CHAT_ID:
                         await bot.send_message(
                             MAIN_CHAT_ID,
                             text,
-                            reply_markup=reply_button(incoming_id)
+                            reply_markup=incoming_actions(incoming_id)
                         )
             except Exception as e:
                 log.warning(f"[IMAP] Ошибка для {acc['email']}: {e}")
 
         await asyncio.sleep(60)
+
+
+# ---------------------------------------------------------
+#  Reply to incoming email
+# ---------------------------------------------------------
+@dp.callback_query_handler(lambda c: c.data.startswith("hist_"))
+async def show_history(call: types.CallbackQuery):
+    incoming_id = int(call.data.split("_")[1])
+    incoming = get_incoming(incoming_id)
+    if not incoming:
+        return await call.answer("История не найдена", show_alert=True)
+
+    email_addr = incoming["from_email"]
+    history = get_conversation(email_addr, limit=None)
+
+    if not history:
+        return await call.message.answer("История пуста.")
+
+    if len(history) > 25:
+        with tempfile.NamedTemporaryFile("w+", delete=False, encoding="utf-8", suffix=".txt") as f:
+            for h in history:
+                icon = "➡️" if h["direction"] == "outgoing" else "⬅️"
+                f.write(
+                    f"{icon} [{_format_timestamp(h['created_at'])}] {h['subject']}\n{h['body']}\nAdlink: {h.get('adlink') or '—'}\n\n"
+                )
+            file_path = f.name
+
+        await bot.send_document(
+            call.message.chat.id,
+            open(file_path, "rb"),
+            caption=f"История с {email_addr} (файл)"
+        )
+        try:
+            os.remove(file_path)
+        except Exception:
+            pass
+    else:
+        lines = []
+        for h in history:
+            icon = "➡️" if h["direction"] == "outgoing" else "⬅️"
+            snippet = (h["body"] or "").strip().replace("\n", " ")[:200]
+            adl = f" | {h['adlink']}" if h.get("adlink") else ""
+            lines.append(f"{icon} [{_format_timestamp(h['created_at'])}] {snippet or '(пусто)'}{adl}")
+
+        text = "\n".join(lines) if lines else "История пуста."
+        await call.message.answer(f"📜 История с {email_addr}:\n{text}")
 
 
 # ---------------------------------------------------------
