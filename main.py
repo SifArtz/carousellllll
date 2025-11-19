@@ -2,6 +2,9 @@ import json
 import asyncio
 import logging
 import smtplib
+import imaplib
+import email
+from email.header import decode_header
 import aiohttp
 import dns.resolver
 from email.mime.text import MIMEText
@@ -35,6 +38,7 @@ log = logging.getLogger("BOT")
 API_TOKEN = "8153409500:AAG8SBAE8wr8QxyOsza6LkIsPxVNS4GTr_M"
 bot = Bot(API_TOKEN)
 dp = Dispatcher(bot, storage=MemoryStorage())
+MAIN_CHAT_ID = None
 
 
 # ---------------------------------------------------------
@@ -42,6 +46,8 @@ dp = Dispatcher(bot, storage=MemoryStorage())
 # ---------------------------------------------------------
 @dp.message_handler(commands=["start"])
 async def start_cmd(msg: types.Message):
+    global MAIN_CHAT_ID
+    MAIN_CHAT_ID = msg.chat.id
     await msg.answer("Главное меню:", reply_markup=main_menu())
     log.info(f"/start от {msg.chat.id}")
 
@@ -486,9 +492,152 @@ async def send_log(call):
 
 
 # ---------------------------------------------------------
+#  IMAP helpers
+# ---------------------------------------------------------
+def _decode_mime_words(header_value):
+    decoded = decode_header(header_value)
+    parts = []
+    for text, enc in decoded:
+        if isinstance(text, bytes):
+            parts.append(text.decode(enc or "utf-8", errors="ignore"))
+        else:
+            parts.append(text)
+    return "".join(parts)
+
+
+def _extract_text_body(msg):
+    if msg.is_multipart():
+        for part in msg.walk():
+            content_type = part.get_content_type()
+            if content_type == "text/plain":
+                charset = part.get_content_charset() or "utf-8"
+                try:
+                    return part.get_payload(decode=True).decode(charset, errors="ignore")
+                except Exception:
+                    continue
+    else:
+        charset = msg.get_content_charset() or "utf-8"
+        try:
+            return msg.get_payload(decode=True).decode(charset, errors="ignore")
+        except Exception:
+            return ""
+    return ""
+
+
+def fetch_unseen_messages(acc):
+    messages = []
+    with imaplib.IMAP4_SSL("imap.gmail.com") as imap:
+        imap.login(acc["email"], acc["app_password"])
+        imap.select("inbox")
+        status, data = imap.search(None, "UNSEEN")
+        if status != "OK":
+            return messages
+
+        for num in data[0].split():
+            status, msg_data = imap.fetch(num, "(RFC822)")
+            if status != "OK":
+                continue
+
+            msg = email.message_from_bytes(msg_data[0][1])
+            message_id = msg.get("Message-ID", num.decode())
+            subject = _decode_mime_words(msg.get("Subject", "(без темы)"))
+            from_email = email.utils.parseaddr(msg.get("From", ""))[1]
+            body = _extract_text_body(msg)
+            preview = body.strip().splitlines()[0][:200] if body else ""
+            messages.append({
+                "message_id": message_id,
+                "from_email": from_email,
+                "subject": subject,
+                "preview": preview
+            })
+
+    return messages
+
+
+async def check_inboxes():
+    while True:
+        accounts = get_accounts()
+        for acc in accounts:
+            try:
+                unseen = await asyncio.to_thread(fetch_unseen_messages, acc)
+                for msg_data in unseen:
+                    if incoming_exists(msg_data["message_id"]):
+                        continue
+
+                    incoming_id = add_incoming_message(
+                        acc["id"],
+                        msg_data["message_id"],
+                        msg_data["from_email"],
+                        msg_data["subject"],
+                        msg_data["preview"]
+                    )
+
+                    if not incoming_id:
+                        continue
+
+                    text = (
+                        f"📩 Новое письмо\n"
+                        f"От: {msg_data['from_email']}\n"
+                        f"Тема: {msg_data['subject']}\n\n"
+                        f"{msg_data['preview'] or 'Без текста'}"
+                    )
+
+                    if MAIN_CHAT_ID:
+                        await bot.send_message(
+                            MAIN_CHAT_ID,
+                            text,
+                            reply_markup=reply_button(incoming_id)
+                        )
+            except Exception as e:
+                log.warning(f"[IMAP] Ошибка для {acc['email']}: {e}")
+
+        await asyncio.sleep(60)
+
+
+# ---------------------------------------------------------
+#  Reply to incoming email
+# ---------------------------------------------------------
+@dp.callback_query_handler(lambda c: c.data.startswith("reply_"))
+async def start_reply(call: types.CallbackQuery, state: FSMContext):
+    incoming_id = int(call.data.split("_")[1])
+    incoming = get_incoming(incoming_id)
+    if not incoming:
+        return await call.answer("Сообщение не найдено", show_alert=True)
+
+    await state.update_data(incoming_id=incoming_id)
+    await ReplyMessage.waiting_text.set()
+    await call.message.answer(
+        f"Введите ответ для {incoming['from_email']} (тема: {incoming['subject']})"
+    )
+
+
+@dp.message_handler(state=ReplyMessage.waiting_text)
+async def send_reply(msg: types.Message, state: FSMContext):
+    data = await state.get_data()
+    incoming = get_incoming(data.get("incoming_id"))
+    if not incoming:
+        await msg.answer("Не удалось найти исходное письмо.")
+        return await state.finish()
+
+    acc = get_account(incoming["account_id"])
+    subject = f"Re: {incoming['subject']}"
+    body = msg.text
+
+    if await send_email(incoming["from_email"], subject, body, acc):
+        await msg.answer("Ответ отправлен!", reply_markup=main_menu())
+    else:
+        await msg.answer("Не удалось отправить ответ.")
+
+    await state.finish()
+
+
+# ---------------------------------------------------------
 #  START
 # ---------------------------------------------------------
 if __name__ == "__main__":
     init_db()
     log.info("BOT STARTED")
-    executor.start_polling(dp, skip_updates=True)
+    async def on_startup(dispatcher):
+        dispatcher.loop.create_task(check_inboxes())
+
+    executor.start_polling(dp, skip_updates=True, on_startup=on_startup)

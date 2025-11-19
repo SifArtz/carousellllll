@@ -53,3 +53,9 @@ def task_actions(task_id):
     kb.add(InlineKeyboardButton("📄 Лог", callback_data=f"task_log_{task_id}"))
     kb.add(InlineKeyboardButton("◀️ Назад", callback_data="tasks"))
     return kb
+
+
+def reply_button(incoming_id):
+    kb = InlineKeyboardMarkup()
+    kb.add(InlineKeyboardButton("💬 Ответить", callback_data=f"reply_{incoming_id}"))
+    return kb
