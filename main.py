@@ -41,6 +41,16 @@ dp = Dispatcher(bot, storage=MemoryStorage())
 MAIN_CHAT_ID = None
 
 
+def _format_task_text(task):
+    return (
+        f"🆔 Задача #{task['id']}\n"
+        f"Статус: {task['status']}\n"
+        f"Всего продавцов: {task['total_sellers']}\n"
+        f"Валидных email: {task['valid_emails']}\n"
+        f"Отправлено: {task['sent_emails']}\n"
+    )
+
+
 # ---------------------------------------------------------
 # /start
 # ---------------------------------------------------------
@@ -57,6 +67,13 @@ async def start_cmd(msg: types.Message):
 # ---------------------------------------------------------
 @dp.callback_query_handler(lambda c: c.data == "start_task")
 async def click_start_task(call: types.CallbackQuery):
+    settings = get_settings()
+    if not settings.get("ai_token"):
+        return await call.message.edit_text(
+            "⚠️ Сначала укажите AI Token в настройках.",
+            reply_markup=main_menu()
+        )
+
     accounts = get_accounts()
     if not accounts:
         return await call.message.edit_text(
@@ -160,6 +177,9 @@ async def save_delay(msg, state):
     except:
         return await msg.answer("Введите правильное число!")
 
+    if d < 0:
+        return await msg.answer("Задержка не может быть отрицательной.")
+
     set_delay(d)
     await msg.answer("Задержка сохранена!", reply_markup=main_menu())
     await state.finish()
@@ -212,26 +232,41 @@ async def file_received(msg, state):
     path = f"./{msg.document.file_name}"
     await file_info.download(destination=path)
 
-    f = open(path, "r", encoding="utf-8-sig")
-    data = json.load(f)
-    f.close()
+    try:
+        with open(path, "r", encoding="utf-8-sig") as f:
+            data = json.load(f)
+    except Exception:
+        return await msg.answer("Не удалось прочитать JSON файл. Проверьте формат данных.")
 
-    items = [{
-        "title": v["title"],
-        "price": v["price"],
-        "img_url": v["img_url"],
-        "seller": v["seller"],
-        "adlink": v.get("adlink", "")
-    } for v in data.values()]
+    items = []
+    for idx, v in enumerate(data.values(), start=1):
+        missing = [k for k in ["title", "price", "img_url", "seller"] if k not in v]
+        if missing:
+            return await msg.answer(f"Строка {idx}: отсутствуют поля: {', '.join(missing)}")
+
+        items.append({
+            "title": v["title"],
+            "price": v["price"],
+            "img_url": v["img_url"],
+            "seller": v["seller"],
+            "adlink": v.get("adlink", "")
+        })
+
+    if not items:
+        return await msg.answer("Файл пустой, не нашлось продавцов для обработки.")
 
     st = await state.get_data()
     acc_id = st["acc_id"]
 
     task_id = create_task(acc_id, len(items))
+    status_msg = await msg.answer(
+        f"Задача #{task_id} запущена. Обработка продавцов...", reply_markup=task_actions(task_id)
+    )
 
-    asyncio.create_task(run_task(task_id, acc_id, items, msg.chat.id))
+    asyncio.create_task(
+        run_task(task_id, acc_id, items, msg.chat.id, status_msg.chat.id, status_msg.message_id)
+    )
 
-    await msg.answer("Задача запущена!", reply_markup=main_menu())
     await state.finish()
 
 
@@ -374,7 +409,7 @@ Return ONLY valid JSON:
 # ---------------------------------------------------------
 #  Фоновая задача
 # ---------------------------------------------------------
-async def run_task(task_id, acc_id, items, chat_id):
+async def run_task(task_id, acc_id, items, chat_id, status_chat_id=None, status_msg_id=None):
 
     acc = get_account(acc_id)
     delay = get_settings()["send_delay"]
@@ -384,6 +419,34 @@ async def run_task(task_id, acc_id, items, chat_id):
 
     valid = 0
     sent = 0
+
+    async def update_progress(status: str):
+        if not status_chat_id or not status_msg_id:
+            return
+
+        task_state = get_task(task_id)
+        if not task_state:
+            return
+
+        text = _format_task_text({
+            **task_state,
+            "status": status,
+            "valid_emails": valid,
+            "sent_emails": sent,
+            "total_sellers": len(items)
+        })
+
+        try:
+            await bot.edit_message_text(
+                text=text,
+                chat_id=status_chat_id,
+                message_id=status_msg_id,
+                reply_markup=task_actions(task_id)
+            )
+        except Exception:
+            pass
+
+    await update_progress("running")
 
     for item in items:
         email = f"{item['seller']}@gmail.com"
@@ -413,10 +476,13 @@ async def run_task(task_id, acc_id, items, chat_id):
         # DB log
         log_item(task_id, email, item["title"], item["price"], item["img_url"], item["adlink"])
 
+        await update_progress("running")
         await asyncio.sleep(delay)
 
     f.close()
     finish_task(task_id, log_path)
+
+    await update_progress("finished")
 
     await bot.send_message(
         chat_id,
@@ -439,15 +505,11 @@ async def run_task(task_id, acc_id, items, chat_id):
 )
 async def task_view(call):
     task_id = int(call.data.split("_")[1])
-    task = next(t for t in get_tasks() if t["id"] == task_id)
+    task = get_task(task_id)
+    if not task:
+        return await call.answer("Задача не найдена", show_alert=True)
 
-    text = (
-        f"🆔 Задача #{task['id']}\n"
-        f"Статус: {task['status']}\n"
-        f"Всего продавцов: {task['total_sellers']}\n"
-        f"Валидных email: {task['valid_emails']}\n"
-        f"Отправлено: {task['sent_emails']}\n"
-    )
+    text = _format_task_text(task)
 
     await call.message.edit_text(text, reply_markup=task_actions(task_id))
 
@@ -458,15 +520,11 @@ async def task_view(call):
 @dp.callback_query_handler(lambda c: c.data.endswith("_refresh"))
 async def refresh_task(call):
     task_id = int(call.data.split("_")[1])
-    task = next(t for t in get_tasks() if t["id"] == task_id)
+    task = get_task(task_id)
+    if not task:
+        return await call.answer("Задача не найдена", show_alert=True)
 
-    text = (
-        f"🆔 Задача #{task['id']}\n"
-        f"Статус: {task['status']}\n"
-        f"Всего продавцов: {task['total_sellers']}\n"
-        f"Валидных email: {task['valid_emails']}\n"
-        f"Отправлено: {task['sent_emails']}\n"
-    )
+    text = _format_task_text(task)
 
     try:
         await call.message.edit_text(text, reply_markup=task_actions(task_id))

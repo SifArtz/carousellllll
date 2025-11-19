@@ -145,6 +145,26 @@ def get_tasks():
     ]
 
 
+def get_task(task_id):
+    conn = db()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM tasks WHERE id=?", (task_id,))
+    r = cur.fetchone()
+    conn.close()
+    if not r:
+        return None
+
+    return {
+        "id": r[0],
+        "account_id": r[1],
+        "total_sellers": r[2],
+        "valid_emails": r[3],
+        "sent_emails": r[4],
+        "status": r[5],
+        "log_file_path": r[6]
+    }
+
+
 # ==========================================================
 # LOG ITEMS (EMAIL LOG)
 # ==========================================================
