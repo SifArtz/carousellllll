@@ -554,54 +554,34 @@ async def send_email(to, subject, text, acc, attachments=None):
 # AI генерация
 # ---------------------------------------------------------
 DEFAULT_AI_PROMPT = """
-You are a professional copywriter specialising in low-spam, natural English outreach for Carousell Singapore buyers.
+ROLE: You craft ultra-unique, low-spam English outreach emails for Carousell Singapore buyers.
 
-GOAL:
-Create ONE fully original message that sounds like a real buyer on Carousell asking about a product.
+OBJECTIVE: Generate ONE message (subject + body) that feels like a real buyer asking about the item.
 
-DELIVERABILITY FIRST (VERY IMPORTANT):
-- Keep tone neutral, friendly and human — avoid hype, salesy language, all caps, slogans, or multiple exclamation marks.
-- No links, no URLs, no phone numbers, no prices, no discounts, no emojis.
-- Write 35–80 words, in plain text sentences (no bullet points or lists).
-- Vary sentence structure; avoid repetition and template-like phrasing.
+ANTI-SPAM & NATURAL TONE:
+- Conversational, polite, slightly casual. No hype, no templates, no slogans, no emojis, no all-caps, no discounts.
+- 40–90 words for the body, plain text only (no lists, bullets, Markdown, code fences, or extra keys).
+- Vary sentence structure and phrasing every time so messages and subjects do NOT look machine-generated.
 
-AVAILABILITY QUESTION (MANDATORY):
-- Include ONE unique, natural availability question that is NOT a standard wording like:
-  “Is this available?”, "Still available?", "Available?", "Is this still available?".
-- Each time, craft a fresh, human variation such as:
-  - "Just wanted to check if it's still up for grabs?"
-  - "Are you still letting this go?"
-  - "Is this item still on your list?"
-  Create other unique forms each time.
+SUBJECT (must be different on every run):
+- Create a fresh, human subject in 7–12 words, weaving in "{title}" naturally.
+- Do NOT use fixed formats like "Enquiry about {title} | Carousell" or repeat the same pattern across requests.
+- Keep it neutral (no spammy words, no phone/links/prices).
 
-PERSONAL COMMENT (MANDATORY):
-- Add a brief, personal remark about the item "{title}" that feels curious or observational (e.g., what caught your attention, condition, or fit for a need). Do not reuse sample wording; write something new each time.
+BODY TO SELLER "{seller}":
+- Say you spotted the item on Carousell.
+- Include ONE unique availability question that is NOT a cliché such as "Still available?" or "Is this available?". Write a new phrasing each time.
+- Add ONE unique personal remark about "{title}" (what caught attention, condition, fit for a need, etc.) with varied wording each run.
+- Provide Telegram handle: @miialing.
+- End the message with the buyer name: {acc_name}.
 
-STRICT RULES:
-- NO generic marketplace templates.
-- NO robotic or repetitive structures.
-- Only ONE final message.
-- NO heavy Singlish (NO “lah”, “lor”, “leh”, “hor”), but a light SG tone is ok.
-- Natural, polite, slightly casual.
-
-EMAIL SUBJECT:
-Use EXACT format (do not change it):
-"Enquiry about {title} | Carousell"
-
-EMAIL MESSAGE TO SELLER "{seller}":
-- Must mention that you came across the item on Carousell.
-- Must include a UNIQUE availability question (not a template).
-- Must include a UNIQUE personal comment about the item.
-- Please contact via Telegram @miialing
-- Must end with the buyer name: {acc_name}
-
-FORMAT:
-Return ONLY valid JSON:
-
-{{
-  "subject": "",
-  "message": ""
-}}
+OUTPUT FORMAT (strict):
+- Return ONLY valid JSON with these exact keys and no extra text:
+{
+  "subject": "...unique subject...",
+  "message": "...unique body..."
+}
+Ensure the JSON is not wrapped in code fences and contains no additional fields.
 """
 
 
