@@ -602,6 +602,17 @@ async def ai_generate(title, seller, acc_name, user_id):
     prompt = _build_prompt(user_id, title, seller, acc_name)
     log.info(f"[AI] Генерация письма для {seller}@gmail.com ({title})")
 
+    messages = [
+        {"role": "system", "content": prompt},
+        {
+            "role": "user",
+            "content": (
+                "Сгенерируй тему и тело письма, используя переданные данные. "
+                f"Заголовок объявления: {title}. Имя продавца: {seller}. Имя покупателя: {acc_name}."
+            ),
+        },
+    ]
+
     client_timeout = aiohttp.ClientTimeout(total=25)
     try:
         async with aiohttp.ClientSession(timeout=client_timeout) as session:
@@ -613,8 +624,9 @@ async def ai_generate(title, seller, acc_name, user_id):
                 },
                 json={
                     "model": "gpt-4o-mini",
-                    "messages": [{"role": "user", "content": prompt}],
-                    "max_tokens": 200
+                    "messages": messages,
+                    "max_tokens": 200,
+                    "response_format": {"type": "json_object"},
                 }
             ) as r:
                 body = await r.text()
