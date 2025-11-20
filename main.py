@@ -600,7 +600,21 @@ async def ai_generate(title, seller, acc_name, user_id):
 
 
     prompt = _build_prompt(user_id, title, seller, acc_name)
+    variation_hint = f"variation-{random.randint(100000, 999999)}"
     log.info(f"[AI] Генерация письма для {seller}@gmail.com ({title})")
+
+    messages = [
+        {"role": "system", "content": prompt},
+        {
+            "role": "user",
+            "content": (
+                "Сгенерируй тему и тело письма, используя переданные данные. "
+                f"Заголовок объявления: {title}. Имя продавца: {seller}. Имя покупателя: {acc_name}. "
+                "Сильно варьируй лексику и структуру относительно предыдущих примеров. "
+                f"Семя для рандомизации: {variation_hint} (не упоминай его в тексте)."
+            ),
+        },
+    ]
 
     client_timeout = aiohttp.ClientTimeout(total=25)
     try:
@@ -613,8 +627,10 @@ async def ai_generate(title, seller, acc_name, user_id):
                 },
                 json={
                     "model": "gpt-4o-mini",
-                    "messages": [{"role": "user", "content": prompt}],
-                    "max_tokens": 200
+                    "messages": messages,
+                    "max_tokens": 200,
+                    "temperature": 0.9,
+                    "response_format": {"type": "json_object"},
                 }
             ) as r:
                 body = await r.text()
