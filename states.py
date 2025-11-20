@@ -1,6 +1,7 @@
 from aiogram.dispatcher.filters.state import State, StatesGroup
 
 
+
 class AddAccount(StatesGroup):
     email = State()
     app_password = State()
