@@ -24,7 +24,8 @@ def init_db():
         CREATE TABLE IF NOT EXISTS settings (
             user_id INTEGER PRIMARY KEY,
             ai_token TEXT DEFAULT '',
-            send_delay INTEGER DEFAULT 1
+            send_delay INTEGER DEFAULT 1,
+            ai_prompt TEXT DEFAULT ''
         )
     """)
 
@@ -121,6 +122,11 @@ def init_db():
 
     try:
         cur.execute("ALTER TABLE tasks ADD COLUMN incoming_checker_enabled INTEGER DEFAULT 1")
+    except sqlite3.OperationalError:
+        pass
+
+    try:
+        cur.execute("ALTER TABLE settings ADD COLUMN ai_prompt TEXT DEFAULT ''")
     except sqlite3.OperationalError:
         pass
 
