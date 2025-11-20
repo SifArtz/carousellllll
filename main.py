@@ -601,6 +601,15 @@ async def ai_generate(title, seller, acc_name, user_id):
 
     prompt = _build_prompt(user_id, title, seller, acc_name)
     variation_hint = f"variation-{random.randint(100000, 999999)}"
+    tone_anchor = random.choice(
+        [
+            "warm and thoughtful",
+            "concise and curious",
+            "enthusiastic but measured",
+            "pragmatic and direct",
+            "friendly and reflective",
+        ]
+    )
     log.info(f"[AI] Генерация письма для {seller}@gmail.com ({title})")
 
     messages = [
@@ -611,7 +620,8 @@ async def ai_generate(title, seller, acc_name, user_id):
                 "Сгенерируй тему и тело письма, используя переданные данные. "
                 f"Заголовок объявления: {title}. Имя продавца: {seller}. Имя покупателя: {acc_name}. "
                 "Сильно варьируй лексику и структуру относительно предыдущих примеров. "
-                f"Семя для рандомизации: {variation_hint} (не упоминай его в тексте)."
+                f"Семя для рандомизации: {variation_hint} (не упоминай его в тексте). "
+                f"Тон для этого письма: {tone_anchor} (передай настроение, но не называй его явно)."
             ),
         },
     ]
@@ -629,7 +639,10 @@ async def ai_generate(title, seller, acc_name, user_id):
                     "model": "gpt-4o-mini",
                     "messages": messages,
                     "max_tokens": 200,
-                    "temperature": 0.9,
+                    "temperature": 1.1,
+                    "top_p": 0.92,
+                    "frequency_penalty": 0.6,
+                    "presence_penalty": 0.3,
                     "response_format": {"type": "json_object"},
                 }
             ) as r:
