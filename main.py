@@ -1,23 +1,25 @@
-import json
 import asyncio
-import logging
-import smtplib
-import imaplib
+import contextlib
 import email
-import os
-import tempfile
 import html
+import json
+import logging
+import os
+import random
+import smtplib
+import tempfile
+from datetime import datetime, timezone
 from email import encoders
 from email.header import decode_header
+from email.mime.base import MIMEBase
+from email.mime.image import MIMEImage
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 from email.utils import parsedate_to_datetime
-from datetime import datetime, timezone
+from mimetypes import guess_type
+
 import aiohttp
 import dns.resolver
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
-from email.mime.image import MIMEImage
-from email.mime.base import MIMEBase
-from mimetypes import guess_type
 
 from aiogram import Bot, Dispatcher, types
 from aiogram.contrib.fsm_storage.memory import MemoryStorage
@@ -93,11 +95,24 @@ async def start_cmd(msg: types.Message):
 @dp.message_handler(lambda m: m.text and m.text.lower() == "отменить", state="*")
 async def cancel_action(msg: types.Message, state: FSMContext):
     if await state.get_state() is None:
-        return await msg.answer("Нет активных действий.", reply_markup=types.ReplyKeyboardRemove())
+        return await msg.answer("Нет активных действий.")
 
     await state.finish()
-    await msg.answer("Действие отменено.", reply_markup=types.ReplyKeyboardRemove())
+    await msg.answer("Действие отменено.")
     await msg.answer("Главное меню:", reply_markup=main_menu())
+
+
+@dp.callback_query_handler(lambda c: c.data == "cancel_action", state="*")
+async def cancel_action_inline(call: types.CallbackQuery, state: FSMContext):
+    if await state.get_state() is None:
+        await call.answer("Нет активных действий")
+        return await call.message.edit_reply_markup()
+
+    await state.finish()
+    await call.answer("Действие отменено")
+    with contextlib.suppress(Exception):
+        await call.message.edit_text("Действие отменено.")
+    await bot.send_message(call.message.chat.id, "Главное меню:", reply_markup=main_menu())
 
 
 # ---------------------------------------------------------
@@ -306,6 +321,8 @@ async def save_delay(msg, state):
 async def view_acc(call):
     acc_id = int(call.data.split("_")[1])
     acc = get_account(acc_id)
+    if not acc:
+        return await call.answer("Аккаунт не найден", show_alert=True)
 
     text = (
         f"<b>{acc['email']}</b>\n"
@@ -318,6 +335,8 @@ async def view_acc(call):
 @dp.callback_query_handler(lambda c: c.data.startswith("acc_del_"))
 async def delete_acc(call):
     acc_id = int(call.data.split("_")[2])
+    if not get_account(acc_id):
+        return await call.answer("Аккаунт не найден", show_alert=True)
     delete_account(acc_id)
     await call.message.edit_text("Аккаунт удалён.", reply_markup=main_menu())
 
@@ -328,6 +347,8 @@ async def delete_acc(call):
 @dp.callback_query_handler(lambda c: c.data.startswith("acc_start_"))
 async def start_task(call, state):
     acc_id = int(call.data.split("_")[2])
+    if not get_account(acc_id):
+        return await call.answer("Аккаунт не найден", show_alert=True)
     await state.update_data(acc_id=acc_id)
 
     await UploadTaskFile.waiting_file.set()
@@ -539,23 +560,39 @@ Return ONLY valid JSON:
 """
     log.info(f"[AI] Генерация письма для {seller}@gmail.com ({title})")
 
-    async with aiohttp.ClientSession() as session:
-        async with session.post(
-            "https://neuroapi.host/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {token}",
-                "Content-Type": "application/json"
-            },
-            json={
-                "model": "gpt-4o-mini",
-                "messages": [{"role": "user", "content": prompt}],
-                "max_tokens": 200
-            }
-        ) as r:
-            js = await r.json()
+    client_timeout = aiohttp.ClientTimeout(total=25)
+    try:
+        async with aiohttp.ClientSession(timeout=client_timeout) as session:
+            async with session.post(
+                "https://neuroapi.host/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json"
+                },
+                json={
+                    "model": "gpt-4o-mini",
+                    "messages": [{"role": "user", "content": prompt}],
+                    "max_tokens": 200
+                }
+            ) as r:
+                r.raise_for_status()
+                js = await r.json()
+    except Exception as e:
+        log.error(f"[AI] Ошибка генерации: {e}")
+        return {
+            "subject": f"Question about {title}",
+            "message": f"Hi! I'm interested in {title}. Is it still available? - {acc_name}",
+        }
 
-    txt = js["choices"][0]["message"]["content"]
-    out = json.loads(txt)
+    try:
+        txt = js["choices"][0]["message"]["content"]
+        out = json.loads(txt)
+    except Exception as e:
+        log.error(f"[AI] Ошибка парсинга ответа: {e}")
+        out = {
+            "subject": f"Question about {title}",
+            "message": f"Hello! I liked {title}. Is it still up for sale? - {acc_name}",
+        }
 
     log.info(f"[AI] Сгенерировано: {out['subject']}")
 
@@ -565,16 +602,53 @@ Return ONLY valid JSON:
 # ---------------------------------------------------------
 #  Фоновая задача
 # ---------------------------------------------------------
+
+
 async def run_task(task_id, acc_id, items, chat_id, status_chat_id=None, status_msg_id=None):
 
     acc = get_account(acc_id)
-    delay = get_settings()["send_delay"]
+    if not acc:
+        log.error(f"[TASK] Аккаунт {acc_id} не найден")
+        return
 
+    delay = max(0, get_settings().get("send_delay", 0))
+
+    class SendRateLimiter:
+        def __init__(self, base_delay: int):
+            self.base_delay = base_delay
+            self._lock = asyncio.Lock()
+            self._last_planned = None
+
+        def _next_delay(self) -> float:
+            if self.base_delay <= 0:
+                return 0
+            jitter = max(1, int(self.base_delay * 0.2))
+            low = max(0, self.base_delay - jitter)
+            high = self.base_delay + jitter
+            return random.uniform(low, max(high, low + 0.1))
+
+        async def wait_turn(self):
+            if self.base_delay <= 0:
+                return
+            async with self._lock:
+                delay_value = self._next_delay()
+                now = asyncio.get_running_loop().time()
+                if self._last_planned is None:
+                    self._last_planned = now
+                    sleep_for = 0
+                else:
+                    self._last_planned = max(self._last_planned + delay_value, now)
+                    sleep_for = max(0, self._last_planned - now)
+            if sleep_for:
+                await asyncio.sleep(sleep_for)
+
+    rate_limiter = SendRateLimiter(delay)
     log_path = f"task_{task_id}.txt"
-    f = open(log_path, "w", encoding="utf-8")
 
     valid = 0
     sent = 0
+    counter_lock = asyncio.Lock()
+    send_tasks = []
 
     async def update_progress(status: str):
         if not status_chat_id or not status_msg_id:
@@ -604,48 +678,68 @@ async def run_task(task_id, acc_id, items, chat_id, status_chat_id=None, status_
 
     await update_progress("running")
 
-    for item in items:
-        email = f"{item['seller']}@gmail.com"
-        log.info(f"[TASK] Обработка продавца {email}")
+    with open(log_path, "w", encoding="utf-8") as f:
+        for item in items:
+            email = f"{item['seller']}@gmail.com"
+            log.info(f"[TASK] Обработка продавца {email}")
 
-        # SMTP
-        if not await smtp_check(email):
-            continue
+            try:
+                smtp_ok = await smtp_check(email)
+            except Exception as e:
+                log.error(f"[TASK] SMTP ошибка для {email}: {e}")
+                continue
 
-        update_valid(task_id)
-        valid += 1
+            if not smtp_ok:
+                continue
 
-        # AI
-        ai_out = await ai_generate(item["title"], item["seller"], acc["name"])
-        subject = ai_out["subject"]
-        message = ai_out["message"]
+            update_valid(task_id)
+            valid += 1
 
-        # SEND
-        if await send_email(email, subject, message, acc):
-            update_sent(task_id)
-            sent += 1
+            try:
+                ai_out = await ai_generate(item["title"], item["seller"], acc["name"])
+            except Exception as e:
+                log.error(f"[TASK] AI ошибка для {email}: {e}")
+                continue
 
-            add_conversation_message(
-                acc_id,
-                email,
-                "outgoing",
-                subject,
-                message,
-                item.get("adlink", ""),
-                created_at=datetime.now(timezone.utc).isoformat()
-            )
+            subject = ai_out.get("subject") or f"Question about {item['title']}"
+            message = ai_out.get("message") or "Hello! Is this still available?"
 
-        # LOG FILE
-        line = f"{email} | {item['title']} | {item['price']} | {item['img_url']} | {item['adlink']}\n"
-        f.write(line)
+            line = f"{email} | {item['title']} | {item['price']} | {item['img_url']} | {item['adlink']}\n"
+            f.write(line)
+            log_item(task_id, email, item["title"], item["price"], item["img_url"], item["adlink"])
 
-        # DB log
-        log_item(task_id, email, item["title"], item["price"], item["img_url"], item["adlink"])
+            async def schedule_send(to_email, subj, body, adlink):
+                nonlocal sent
+                try:
+                    await rate_limiter.wait_turn()
+                    sent_ok = await send_email(to_email, subj, body, acc)
+                except Exception as e:
+                    log.error(f"[TASK] Ошибка отправки {to_email}: {e}")
+                    sent_ok = False
 
-        await update_progress("running")
-        await asyncio.sleep(delay)
+                if sent_ok:
+                    update_sent(task_id)
+                    async with counter_lock:
+                        sent += 1
+                    add_conversation_message(
+                        acc_id,
+                        to_email,
+                        "outgoing",
+                        subj,
+                        body,
+                        adlink,
+                        created_at=datetime.now(timezone.utc).isoformat()
+                    )
 
-    f.close()
+                await update_progress("running")
+
+            send_tasks.append(asyncio.create_task(
+                schedule_send(email, subject, message, item.get("adlink", ""))
+            ))
+
+    if send_tasks:
+        await asyncio.gather(*send_tasks, return_exceptions=True)
+
     finish_task(task_id, log_path)
 
     await update_progress("finished")
@@ -658,8 +752,7 @@ async def run_task(task_id, acc_id, items, chat_id, status_chat_id=None, status_
         f"Отправлено: {sent}"
     )
 
-    log.info(f"[TASK] Задача #{task_id} завершена!")
-
+    log.info(f"[TASK] Задача #{task_id} звершена!")
 
 # ---------------------------------------------------------
 #  Просмотр задачи
@@ -704,7 +797,9 @@ async def refresh_task(call):
 @dp.callback_query_handler(lambda c: c.data.startswith("task_log_"))
 async def send_log(call):
     task_id = int(call.data.split("_")[2])
-    task = next(t for t in get_tasks() if t["id"] == task_id)
+    task = next((t for t in get_tasks() if t["id"] == task_id), None)
+    if not task:
+        return await call.answer("Задача не найдена", show_alert=True)
 
     if not task["log_file_path"]:
         return await call.answer("Лог ещё не создан!")
@@ -959,7 +1054,8 @@ async def start_reply(call: types.CallbackQuery, state: FSMContext):
     await state.update_data(incoming_id=incoming_id)
     await ReplyMessage.waiting_text.set()
     await call.message.answer(
-        f"Введите ответ для {incoming['from_email']} (тема: {incoming['subject']})"
+        f"Введите ответ для {incoming['from_email']} (тема: {incoming['subject']})",
+        reply_markup=cancel_keyboard(),
     )
 
 
@@ -972,6 +1068,9 @@ async def send_reply(msg: types.Message, state: FSMContext):
         return await state.finish()
 
     acc = get_account(incoming["account_id"])
+    if not acc:
+        await msg.answer("Аккаунт для ответа не найден.")
+        return await state.finish()
     subject = f"Re: {incoming['subject']}"
     attachments = []
     logged_body = None
