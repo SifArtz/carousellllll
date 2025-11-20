@@ -657,8 +657,8 @@ async def ai_generate(title, seller, acc_name, user_id):
                         "subject": f"Question about {title}",
                         "message": f"Hi! I'm interested in {title}. Is it still available? - {acc_name}",
                     }
-    except Exception as e:
-        log.error(f"[AI] Ошибка генерации: {e}")
+    except Exception:
+        log.exception("[AI] Ошибка генерации")
         return {
             "subject": f"Question about {title}",
             "message": f"Hi! I'm interested in {title}. Is it still available? - {acc_name}",
