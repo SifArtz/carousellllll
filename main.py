@@ -314,6 +314,50 @@ async def save_delay(msg, state):
     await state.finish()
 
 
+@dp.callback_query_handler(lambda c: c.data == "set_prompt")
+async def set_prompt_click(call):
+    current_prompt = get_settings(call.from_user.id).get("ai_prompt") or "(используется промт по умолчанию)"
+    hint = (
+        "Введите промт для ИИ. Вы можете использовать плейсхолдеры {title}, {acc_name}, {seller}.\n\n"
+        f"Текущий промт:\n{current_prompt}"
+    )
+    await SetPrompt.prompt.set()
+    await call.message.edit_text(hint, reply_markup=cancel_keyboard())
+
+
+@dp.message_handler(state=SetPrompt.prompt)
+async def save_prompt(msg, state):
+    set_ai_prompt(msg.chat.id, msg.text)
+    await msg.answer(
+        "Промт сохранён! Нажмите \"Сгенерировать промт\" в настройках, чтобы проверить результат.",
+        reply_markup=types.ReplyKeyboardRemove(),
+    )
+    await msg.answer("Настройки:", reply_markup=settings_menu())
+    await state.finish()
+
+
+@dp.callback_query_handler(lambda c: c.data == "generate_prompt")
+async def generate_prompt_example(call: types.CallbackQuery):
+    settings = get_settings(call.from_user.id)
+    if not settings.get("ai_token"):
+        return await call.message.edit_text(
+            "⚠️ Сначала укажите AI Token в настройках.",
+            reply_markup=settings_menu(),
+        )
+
+    await call.answer("Генерируем пример...")
+    sample_title = "Example listing"
+    sample_seller = "seller"
+    sample_acc_name = "Demo Buyer"
+    generated = await ai_generate(sample_title, sample_seller, sample_acc_name, call.from_user.id)
+
+    text = (
+        f"Тема: {generated.get('subject', '')}\n\n"
+        f"{generated.get('message', '')}"
+    )
+    await call.message.edit_text(text or "Не удалось сгенерировать", reply_markup=settings_menu())
+
+
 # ---------------------------------------------------------
 #  Просмотр аккаунта + запуск задачи
 # ---------------------------------------------------------
@@ -508,10 +552,7 @@ async def send_email(to, subject, text, acc, attachments=None):
 # ---------------------------------------------------------
 # AI генерация
 # ---------------------------------------------------------
-async def ai_generate(title, seller, acc_name, user_id):
-    token = get_settings(user_id)["ai_token"]
-
-    prompt = f"""
+DEFAULT_AI_PROMPT = """
 You are a professional copywriter specialising in low-spam, natural English outreach for Carousell Singapore buyers.
 
 GOAL:
@@ -561,6 +602,23 @@ Return ONLY valid JSON:
   "message": ""
 }}
 """
+
+
+def _build_prompt(user_id, title, seller, acc_name):
+    settings = get_settings(user_id)
+    prompt_template = settings.get("ai_prompt") or DEFAULT_AI_PROMPT
+    try:
+        return prompt_template.format(title=title, seller=seller, acc_name=acc_name)
+    except Exception as e:
+        log.error(f"[AI] Ошибка форматирования промта: {e}")
+        return DEFAULT_AI_PROMPT.format(title=title, seller=seller, acc_name=acc_name)
+
+
+async def ai_generate(title, seller, acc_name, user_id):
+    token = get_settings(user_id)["ai_token"]
+
+
+    prompt = _build_prompt(user_id, title, seller, acc_name)
     log.info(f"[AI] Генерация письма для {seller}@gmail.com ({title})")
 
     client_timeout = aiohttp.ClientTimeout(total=25)
