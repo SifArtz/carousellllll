@@ -521,7 +521,7 @@ DELIVERABILITY FIRST (VERY IMPORTANT):
 - Keep tone neutral, friendly and human — avoid hype, salesy language, all caps, slogans, or multiple exclamation marks.
 - No links, no URLs, no phone numbers, no prices, no discounts, no emojis.
 - Write 35–80 words, in plain text sentences (no bullet points or lists).
-- Vary sentence structure; avoid repetition and template-like phrasing.
+- Vary sentence structure; avoid repetition and template-like phrasing. Avoid repeating the same sentence order across messages.
 
 AVAILABILITY QUESTION (MANDATORY):
 - Include ONE unique, natural availability question that is NOT a standard wording like:
@@ -547,9 +547,10 @@ Use EXACT format (do not change it):
 "Enquiry about {title} | Carousell"
 
 EMAIL MESSAGE TO SELLER "{seller}":
-- Must mention that you came across the item on Carousell.
+- Must mention that you came across the item on Carousell, but vary the phrasing so it does not sound copied between messages.
 - Must include a UNIQUE availability question (not a template).
 - Must include a UNIQUE personal comment about the item.
+- Mix sentence lengths and opening styles (sometimes start with the comment, other times with the question) to avoid structural sameness.
 - Must end with the buyer name: {acc_name}
 
 FORMAT:
