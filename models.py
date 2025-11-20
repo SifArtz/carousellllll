@@ -109,15 +109,27 @@ def set_delay(user_id, delay):
     conn.close()
 
 
+def set_ai_prompt(user_id, prompt):
+    _ensure_settings_row(user_id)
+    conn = db()
+    cur = conn.cursor()
+    cur.execute("UPDATE settings SET ai_prompt=? WHERE user_id=?", (prompt, user_id))
+    conn.commit()
+    conn.close()
+
+
 def get_settings(user_id):
     _ensure_settings_row(user_id)
     conn = db()
     cur = conn.cursor()
-    cur.execute("SELECT ai_token, send_delay FROM settings WHERE user_id=?", (user_id,))
+    cur.execute(
+        "SELECT ai_token, send_delay, ai_prompt FROM settings WHERE user_id=?",
+        (user_id,),
+    )
     r = cur.fetchone()
     conn.close()
 
-    return {"ai_token": r[0], "send_delay": r[1]}
+    return {"ai_token": r[0], "send_delay": r[1], "ai_prompt": r[2]}
 
 
 # ==========================================================

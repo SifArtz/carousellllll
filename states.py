@@ -17,6 +17,10 @@ class SetDelay(StatesGroup):
     delay = State()
 
 
+class SetPrompt(StatesGroup):
+    prompt = State()
+
+
 class UploadTaskFile(StatesGroup):
     waiting_file = State()
 
