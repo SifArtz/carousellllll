@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import random
+import re
 import smtplib
 import tempfile
 from datetime import datetime, timezone
@@ -636,8 +637,26 @@ async def ai_generate(title, seller, acc_name, user_id):
                     "max_tokens": 200
                 }
             ) as r:
-                r.raise_for_status()
-                js = await r.json()
+                body = await r.text()
+                if r.status >= 400:
+                    log.error(
+                        f"[AI] Ошибка генерации: HTTP {r.status} | {body[:400]}"
+                    )
+                    return {
+                        "subject": f"Question about {title}",
+                        "message": f"Hi! I'm interested in {title}. Is it still available? - {acc_name}",
+                    }
+
+                try:
+                    js = json.loads(body)
+                except Exception as parse_err:
+                    log.error(
+                        f"[AI] Ошибка чтения JSON ответа: {parse_err} | {body[:400]}"
+                    )
+                    return {
+                        "subject": f"Question about {title}",
+                        "message": f"Hi! I'm interested in {title}. Is it still available? - {acc_name}",
+                    }
     except Exception as e:
         log.error(f"[AI] Ошибка генерации: {e}")
         return {
@@ -645,17 +664,35 @@ async def ai_generate(title, seller, acc_name, user_id):
             "message": f"Hi! I'm interested in {title}. Is it still available? - {acc_name}",
         }
 
+    content = None
     try:
-        txt = js["choices"][0]["message"]["content"]
-        out = json.loads(txt)
+        content = js["choices"][0]["message"].get("content")
     except Exception as e:
-        log.error(f"[AI] Ошибка парсинга ответа: {e}")
+        log.error(f"[AI] Некорректный формат ответа: {e} | {js}")
+
+    if isinstance(content, dict):
+        out = content
+    elif isinstance(content, str):
+        cleaned = content.strip()
+        fenced_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", cleaned, re.S)
+        if fenced_match:
+            cleaned = fenced_match.group(1)
+
+        try:
+            out = json.loads(cleaned)
+        except Exception as e:
+            log.error(f"[AI] Ошибка парсинга ответа: {e} | {cleaned[:200]}")
+            out = None
+    else:
+        out = None
+
+    if not isinstance(out, dict):
         out = {
             "subject": f"Question about {title}",
             "message": f"Hello! I liked {title}. Is it still up for sale? - {acc_name}",
         }
 
-    log.info(f"[AI] Сгенерировано: {out['subject']}")
+    log.info(f"[AI] Сгенерировано: {out.get('subject', '(нет темы)')}")
 
     return out
 
