@@ -1,6 +1,7 @@
 import asyncio
 import contextlib
 import email
+import imaplib
 import html
 import json
 import logging
@@ -49,7 +50,6 @@ log = logging.getLogger("BOT")
 API_TOKEN = "8153409500:AAG8SBAE8wr8QxyOsza6LkIsPxVNS4GTr_M"
 bot = Bot(API_TOKEN)
 dp = Dispatcher(bot, storage=MemoryStorage())
-MAIN_CHAT_ID = None
 
 
 def _format_task_text(task):
@@ -86,8 +86,6 @@ def _escape_html(text: str) -> str:
 # ---------------------------------------------------------
 @dp.message_handler(commands=["start"])
 async def start_cmd(msg: types.Message):
-    global MAIN_CHAT_ID
-    MAIN_CHAT_ID = msg.chat.id
     await msg.answer("Главное меню:", reply_markup=main_menu())
     log.info(f"/start от {msg.chat.id}")
 
@@ -120,14 +118,15 @@ async def cancel_action_inline(call: types.CallbackQuery, state: FSMContext):
 # ---------------------------------------------------------
 @dp.callback_query_handler(lambda c: c.data == "start_task")
 async def click_start_task(call: types.CallbackQuery):
-    settings = get_settings()
+    user_id = call.from_user.id
+    settings = get_settings(user_id)
     if not settings.get("ai_token"):
         return await call.message.edit_text(
             "⚠️ Сначала укажите AI Token в настройках.",
             reply_markup=main_menu()
         )
 
-    accounts = get_accounts()
+    accounts = get_accounts(user_id)
     if not accounts:
         return await call.message.edit_text(
             "Нет аккаунтов. Добавьте почту.",
@@ -140,7 +139,7 @@ async def click_start_task(call: types.CallbackQuery):
 @dp.callback_query_handler(lambda c: c.data.startswith("accounts_page_"))
 async def accounts_page(call: types.CallbackQuery):
     page = int(call.data.split("_")[2])
-    accounts = get_accounts()
+    accounts = get_accounts(call.from_user.id)
     if not accounts:
         return await call.message.edit_text(
             "Нет аккаунтов. Добавьте почту.",
@@ -159,7 +158,7 @@ async def add_acc_click(call: types.CallbackQuery):
 
 @dp.callback_query_handler(lambda c: c.data == "tasks")
 async def tasks_click(call: types.CallbackQuery):
-    tasks = get_tasks()
+    tasks = get_tasks(call.from_user.id)
 
     if not tasks:
         return await call.message.edit_text("Задач нет.", reply_markup=main_menu())
@@ -170,7 +169,7 @@ async def tasks_click(call: types.CallbackQuery):
 @dp.callback_query_handler(lambda c: c.data.startswith("tasks_page_"))
 async def tasks_page(call: types.CallbackQuery):
     page = int(call.data.split("_")[2])
-    tasks = get_tasks()
+    tasks = get_tasks(call.from_user.id)
     if not tasks:
         return await call.message.edit_text("Задач нет.", reply_markup=main_menu())
 
@@ -194,7 +193,8 @@ async def noop(call: types.CallbackQuery):
 
 async def _render_inbox_page(message_obj, page: int = 1):
     per_page = 6
-    total = count_unique_senders()
+    user_id = message_obj.from_user.id if isinstance(message_obj, types.CallbackQuery) else message_obj.chat.id
+    total = count_unique_senders(user_id)
     if not total:
         if isinstance(message_obj, types.CallbackQuery):
             return await message_obj.message.edit_text("Входящих писем нет.", reply_markup=main_menu())
@@ -203,7 +203,7 @@ async def _render_inbox_page(message_obj, page: int = 1):
     total_pages = max(1, (total + per_page - 1) // per_page)
     page = max(1, min(page, total_pages))
     offset = (page - 1) * per_page
-    items = get_latest_incoming(limit=per_page, offset=offset)
+    items = get_latest_incoming(user_id, limit=per_page, offset=offset)
     if isinstance(message_obj, types.CallbackQuery):
         await message_obj.message.edit_text(
             "Входящие письма:",
@@ -262,7 +262,7 @@ async def acc_set_proxy(msg, state):
     data = await state.get_data()
 
     add_account(
-        data["email"], data["app_password"], data["name"], proxy
+        msg.chat.id, data["email"], data["app_password"], data["name"], proxy
     )
 
     log.info(f"Добавлен аккаунт {data['email']}")
@@ -283,7 +283,7 @@ async def set_token_click(call):
 
 @dp.message_handler(state=SetToken.token)
 async def save_token(msg, state):
-    set_ai_token(msg.text)
+    set_ai_token(msg.chat.id, msg.text)
     await msg.answer("AI Token сохранён!", reply_markup=types.ReplyKeyboardRemove())
     await msg.answer("AI Token сохранён!", reply_markup=main_menu())
     await state.finish()
@@ -306,7 +306,7 @@ async def save_delay(msg, state):
     if d < 0:
         return await msg.answer("Задержка не может быть отрицательной.")
 
-    set_delay(d)
+    set_delay(msg.chat.id, d)
     await msg.answer("Задержка сохранена!", reply_markup=types.ReplyKeyboardRemove())
     await msg.answer("Задержка сохранена!", reply_markup=main_menu())
     await state.finish()
@@ -320,7 +320,7 @@ async def save_delay(msg, state):
 )
 async def view_acc(call):
     acc_id = int(call.data.split("_")[1])
-    acc = get_account(acc_id)
+    acc = get_account(acc_id, call.from_user.id)
     if not acc:
         return await call.answer("Аккаунт не найден", show_alert=True)
 
@@ -335,9 +335,9 @@ async def view_acc(call):
 @dp.callback_query_handler(lambda c: c.data.startswith("acc_del_"))
 async def delete_acc(call):
     acc_id = int(call.data.split("_")[2])
-    if not get_account(acc_id):
+    if not get_account(acc_id, call.from_user.id):
         return await call.answer("Аккаунт не найден", show_alert=True)
-    delete_account(acc_id)
+    delete_account(acc_id, call.from_user.id)
     await call.message.edit_text("Аккаунт удалён.", reply_markup=main_menu())
 
 
@@ -347,9 +347,10 @@ async def delete_acc(call):
 @dp.callback_query_handler(lambda c: c.data.startswith("acc_start_"))
 async def start_task(call, state):
     acc_id = int(call.data.split("_")[2])
-    if not get_account(acc_id):
+    acc = get_account(acc_id, call.from_user.id)
+    if not acc:
         return await call.answer("Аккаунт не найден", show_alert=True)
-    await state.update_data(acc_id=acc_id)
+    await state.update_data(acc_id=acc_id, user_id=call.from_user.id)
 
     await UploadTaskFile.waiting_file.set()
     await call.message.edit_text("Отправьте .txt файл с JSON данными.")
@@ -358,11 +359,11 @@ async def start_task(call, state):
 @dp.callback_query_handler(lambda c: c.data.startswith("inbox_view_"))
 async def inbox_view(call: types.CallbackQuery):
     incoming_id = int(call.data.split("_")[2])
-    incoming = get_incoming(incoming_id)
+    incoming = get_incoming(incoming_id, call.from_user.id)
     if not incoming:
         return await call.answer("Письмо не найдено", show_alert=True)
 
-    adlink = last_adlink_by_email(incoming["from_email"])
+    adlink = last_adlink_by_email(incoming["from_email"], call.from_user.id)
     body = incoming.get("body_full") or incoming.get("body_preview") or "Без текста"
     text = (
         f"📩 Письмо | {incoming['from_email']}\n\n"
@@ -415,14 +416,15 @@ async def file_received(msg, state):
 
     st = await state.get_data()
     acc_id = st["acc_id"]
+    user_id = st["user_id"]
 
-    task_id = create_task(acc_id, len(items))
+    task_id = create_task(acc_id, len(items), user_id)
     status_msg = await msg.answer(
         f"Задача #{task_id} запущена. Обработка продавцов...", reply_markup=task_actions(task_id)
     )
 
     asyncio.create_task(
-        run_task(task_id, acc_id, items, msg.chat.id, status_msg.chat.id, status_msg.message_id)
+        run_task(task_id, acc_id, items, msg.chat.id, status_msg.chat.id, status_msg.message_id, user_id)
     )
 
     await state.finish()
@@ -503,8 +505,8 @@ async def send_email(to, subject, text, acc, attachments=None):
 # ---------------------------------------------------------
 # AI генерация
 # ---------------------------------------------------------
-async def ai_generate(title, seller, acc_name):
-    token = get_settings()["ai_token"]
+async def ai_generate(title, seller, acc_name, user_id):
+    token = get_settings(user_id)["ai_token"]
 
     prompt = f"""
 You are a professional copywriter specialising in generating highly unique, conversational and natural English messages for Carousell Singapore buyers.
@@ -604,14 +606,14 @@ Return ONLY valid JSON:
 # ---------------------------------------------------------
 
 
-async def run_task(task_id, acc_id, items, chat_id, status_chat_id=None, status_msg_id=None):
+async def run_task(task_id, acc_id, items, chat_id, status_chat_id=None, status_msg_id=None, user_id=None):
 
-    acc = get_account(acc_id)
+    acc = get_account(acc_id, user_id)
     if not acc:
         log.error(f"[TASK] Аккаунт {acc_id} не найден")
         return
 
-    delay = max(0, get_settings().get("send_delay", 0))
+    delay = max(0, get_settings(user_id).get("send_delay", 0))
 
     class SendRateLimiter:
         def __init__(self, base_delay: int):
@@ -654,7 +656,7 @@ async def run_task(task_id, acc_id, items, chat_id, status_chat_id=None, status_
         if not status_chat_id or not status_msg_id:
             return
 
-        task_state = get_task(task_id)
+        task_state = get_task(task_id, user_id)
         if not task_state:
             return
 
@@ -696,7 +698,7 @@ async def run_task(task_id, acc_id, items, chat_id, status_chat_id=None, status_
             valid += 1
 
             try:
-                ai_out = await ai_generate(item["title"], item["seller"], acc["name"])
+                ai_out = await ai_generate(item["title"], item["seller"], acc["name"], user_id)
             except Exception as e:
                 log.error(f"[TASK] AI ошибка для {email}: {e}")
                 continue
@@ -706,7 +708,7 @@ async def run_task(task_id, acc_id, items, chat_id, status_chat_id=None, status_
 
             line = f"{email} | {item['title']} | {item['price']} | {item['img_url']} | {item['adlink']}\n"
             f.write(line)
-            log_item(task_id, email, item["title"], item["price"], item["img_url"], item["adlink"])
+            log_item(task_id, email, item["title"], item["price"], item["img_url"], item["adlink"], user_id)
 
             async def schedule_send(to_email, subj, body, adlink):
                 nonlocal sent
@@ -728,7 +730,8 @@ async def run_task(task_id, acc_id, items, chat_id, status_chat_id=None, status_
                         subj,
                         body,
                         adlink,
-                        created_at=datetime.now(timezone.utc).isoformat()
+                        created_at=datetime.now(timezone.utc).isoformat(),
+                        user_id=user_id,
                     )
 
                 await update_progress("running")
@@ -764,7 +767,7 @@ async def run_task(task_id, acc_id, items, chat_id, status_chat_id=None, status_
 )
 async def task_view(call):
     task_id = int(call.data.split("_")[1])
-    task = get_task(task_id)
+    task = get_task(task_id, call.from_user.id)
     if not task:
         return await call.answer("Задача не найдена", show_alert=True)
 
@@ -779,7 +782,7 @@ async def task_view(call):
 @dp.callback_query_handler(lambda c: c.data.endswith("_refresh"))
 async def refresh_task(call):
     task_id = int(call.data.split("_")[1])
-    task = get_task(task_id)
+    task = get_task(task_id, call.from_user.id)
     if not task:
         return await call.answer("Задача не найдена", show_alert=True)
 
@@ -797,7 +800,7 @@ async def refresh_task(call):
 @dp.callback_query_handler(lambda c: c.data.startswith("task_log_"))
 async def send_log(call):
     task_id = int(call.data.split("_")[2])
-    task = next((t for t in get_tasks() if t["id"] == task_id), None)
+    task = next((t for t in get_tasks(call.from_user.id) if t["id"] == task_id), None)
     if not task:
         return await call.answer("Задача не найдена", show_alert=True)
 
@@ -934,7 +937,7 @@ async def check_inboxes():
             try:
                 unseen = await asyncio.to_thread(fetch_unseen_messages, acc)
                 for msg_data in unseen:
-                    if incoming_exists(msg_data["message_id"]):
+                    if incoming_exists(msg_data["message_id"], acc.get("user_id")):
                         continue
 
                     incoming_id = add_incoming_message(
@@ -944,13 +947,14 @@ async def check_inboxes():
                         msg_data["subject"],
                         msg_data["preview"],
                         msg_data.get("body"),
-                        msg_data.get("received_at")
+                        msg_data.get("received_at"),
+                        acc.get("user_id"),
                     )
 
                     if not incoming_id:
                         continue
 
-                    adlink = last_adlink_by_email(msg_data["from_email"])
+                    adlink = last_adlink_by_email(msg_data["from_email"], acc["user_id"])
 
                     add_conversation_message(
                         acc["id"],
@@ -960,7 +964,8 @@ async def check_inboxes():
                         msg_data.get("body") or msg_data["preview"],
                         adlink,
                         msg_data["message_id"],
-                        msg_data.get("received_at")
+                        msg_data.get("received_at"),
+                        acc.get("user_id"),
                     )
 
                     text = (
@@ -970,9 +975,9 @@ async def check_inboxes():
                         f"💬 Текст сообщения:\n\n{_escape_html(msg_data.get('body') or msg_data['preview'] or 'Без текста')}"
                     )
 
-                    if MAIN_CHAT_ID:
+                    if acc.get("user_id"):
                         await bot.send_message(
-                            MAIN_CHAT_ID,
+                            acc["user_id"],
                             text,
                             reply_markup=incoming_actions(incoming_id),
                             parse_mode="HTML",
@@ -990,12 +995,12 @@ async def check_inboxes():
 @dp.callback_query_handler(lambda c: c.data.startswith("hist_"))
 async def show_history(call: types.CallbackQuery):
     incoming_id = int(call.data.split("_")[1])
-    incoming = get_incoming(incoming_id)
+    incoming = get_incoming(incoming_id, call.from_user.id)
     if not incoming:
         return await call.answer("История не найдена", show_alert=True)
 
     email_addr = incoming["from_email"]
-    history = get_conversation(email_addr, limit=None)
+    history = get_conversation(email_addr, call.from_user.id, limit=None)
 
     if not history:
         return await call.message.answer("История пуста.")
@@ -1022,7 +1027,7 @@ async def show_history(call: types.CallbackQuery):
         lines = [
             f"📜 История | {email_addr}",
             "",
-            f"🔗 {_format_link(last_adlink_by_email(email_addr))}",
+            f"🔗 {_format_link(last_adlink_by_email(email_addr, call.from_user.id))}",
             "",
         ]
 
@@ -1062,12 +1067,12 @@ async def start_reply(call: types.CallbackQuery, state: FSMContext):
 @dp.message_handler(state=ReplyMessage.waiting_text, content_types=["text", "photo", "document"])
 async def send_reply(msg: types.Message, state: FSMContext):
     data = await state.get_data()
-    incoming = get_incoming(data.get("incoming_id"))
+    incoming = get_incoming(data.get("incoming_id"), msg.chat.id)
     if not incoming:
         await msg.answer("Не удалось найти исходное письмо.")
         return await state.finish()
 
-    acc = get_account(incoming["account_id"])
+    acc = get_account(incoming["account_id"], msg.chat.id)
     if not acc:
         await msg.answer("Аккаунт для ответа не найден.")
         return await state.finish()
@@ -1112,8 +1117,9 @@ async def send_reply(msg: types.Message, state: FSMContext):
             "outgoing",
             subject,
             logged_body,
-            last_adlink_by_email(incoming["from_email"]),
-            created_at=datetime.now(timezone.utc).isoformat()
+            last_adlink_by_email(incoming["from_email"], msg.chat.id),
+            created_at=datetime.now(timezone.utc).isoformat(),
+            user_id=msg.chat.id,
         )
         await msg.answer("Ответ отправлен!", reply_markup=types.ReplyKeyboardRemove())
         await msg.answer("Главное меню:", reply_markup=main_menu())
