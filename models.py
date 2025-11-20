@@ -123,12 +123,15 @@ def get_settings(user_id):
 # ==========================================================
 # TASKS
 # ==========================================================
-def create_task(acc_id, total, user_id):
+def create_task(acc_id, total, user_id, incoming_checker_enabled=True):
     conn = db()
     cur = conn.cursor()
     cur.execute(
-        "INSERT INTO tasks (account_id, total_sellers, status, user_id) VALUES (?, ?, 'running', ?)",
-        (acc_id, total, user_id)
+        """
+        INSERT INTO tasks (account_id, total_sellers, status, user_id, incoming_checker_enabled)
+        VALUES (?, ?, 'running', ?, ?)
+        """,
+        (acc_id, total, user_id, int(bool(incoming_checker_enabled)))
     )
     conn.commit()
     task_id = cur.lastrowid
@@ -163,13 +166,54 @@ def finish_task(task_id, log_path):
     conn.close()
 
 
+def set_task_checker(task_id, enabled, user_id=None):
+    conn = db()
+    cur = conn.cursor()
+    query = "UPDATE tasks SET incoming_checker_enabled=? WHERE id=?"
+    params = [int(bool(enabled)), task_id]
+    if user_id is not None:
+        query += " AND user_id=?"
+        params.append(user_id)
+    cur.execute(query, params)
+    conn.commit()
+    conn.close()
+
+
+def user_has_enabled_checker(user_id):
+    conn = db()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT 1 FROM tasks WHERE user_id=? AND COALESCE(incoming_checker_enabled, 1)=1 LIMIT 1",
+        (user_id,)
+    )
+    row = cur.fetchone()
+    conn.close()
+    return row is not None
+
+
 def get_tasks(user_id=None):
     conn = db()
     cur = conn.cursor()
     if user_id is None:
-        cur.execute("SELECT * FROM tasks ORDER BY id DESC")
+        cur.execute(
+            """
+            SELECT id, account_id, total_sellers, valid_emails, sent_emails, status,
+                   log_file_path, incoming_checker_enabled, user_id
+            FROM tasks
+            ORDER BY id DESC
+            """
+        )
     else:
-        cur.execute("SELECT * FROM tasks WHERE user_id=? ORDER BY id DESC", (user_id,))
+        cur.execute(
+            """
+            SELECT id, account_id, total_sellers, valid_emails, sent_emails, status,
+                   log_file_path, incoming_checker_enabled, user_id
+            FROM tasks
+            WHERE user_id=?
+            ORDER BY id DESC
+            """,
+            (user_id,)
+        )
     rows = cur.fetchall()
     conn.close()
 
@@ -182,7 +226,8 @@ def get_tasks(user_id=None):
             "sent_emails": r[4],
             "status": r[5],
             "log_file_path": r[6],
-            "user_id": r[7],
+            "incoming_checker_enabled": r[7] if len(r) > 7 else 1,
+            "user_id": r[8] if len(r) > 8 else None,
         }
         for r in rows
     ]
@@ -192,9 +237,25 @@ def get_task(task_id, user_id=None):
     conn = db()
     cur = conn.cursor()
     if user_id is None:
-        cur.execute("SELECT * FROM tasks WHERE id=?", (task_id,))
+        cur.execute(
+            """
+            SELECT id, account_id, total_sellers, valid_emails, sent_emails, status,
+                   log_file_path, incoming_checker_enabled, user_id
+            FROM tasks
+            WHERE id=?
+            """,
+            (task_id,)
+        )
     else:
-        cur.execute("SELECT * FROM tasks WHERE id=? AND user_id=?", (task_id, user_id))
+        cur.execute(
+            """
+            SELECT id, account_id, total_sellers, valid_emails, sent_emails, status,
+                   log_file_path, incoming_checker_enabled, user_id
+            FROM tasks
+            WHERE id=? AND user_id=?
+            """,
+            (task_id, user_id)
+        )
     r = cur.fetchone()
     conn.close()
     if not r:
@@ -208,7 +269,8 @@ def get_task(task_id, user_id=None):
         "sent_emails": r[4],
         "status": r[5],
         "log_file_path": r[6],
-        "user_id": r[7],
+        "incoming_checker_enabled": r[7] if len(r) > 7 else 1,
+        "user_id": r[8] if len(r) > 8 else None,
     }
 
 

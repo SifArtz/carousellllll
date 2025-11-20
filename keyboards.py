@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 
@@ -78,10 +80,12 @@ def tasks_menu(tasks, page=1, per_page=6):
     return kb
 
 
-def task_actions(task_id):
+def task_actions(task_id, checker_enabled=True):
     kb = InlineKeyboardMarkup()
     kb.add(InlineKeyboardButton("🔄 Обновить", callback_data=f"task_{task_id}_refresh"))
     kb.add(InlineKeyboardButton("📄 Лог", callback_data=f"task_log_{task_id}"))
+    toggle_text = "🔕 Отключить чекер" if checker_enabled else "🔔 Включить чекер"
+    kb.add(InlineKeyboardButton(toggle_text, callback_data=f"task_toggle_checker_{task_id}"))
     kb.add(InlineKeyboardButton("◀️ Назад", callback_data="tasks"))
     return kb
 
@@ -122,7 +126,7 @@ def inbox_menu(items, page=1, per_page=6, total_count=None):
 
     for it in chunk:
         kb.add(InlineKeyboardButton(
-            f"{it['from_email']} ({_safe_ts(it['received_at'])})",
+            f"{it['from_email']} ({_format_ts(it.get('received_at'))})",
             callback_data=f"inbox_view_{it['incoming_id']}"
         ))
 
@@ -139,5 +143,12 @@ def inbox_menu(items, page=1, per_page=6, total_count=None):
     return kb
 
 
-def _safe_ts(ts):
-    return ts or "–"
+def _format_ts(ts):
+    if not ts:
+        return "–"
+
+    try:
+        dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        return dt.strftime("%d.%m.%Y %H:%M")
+    except Exception:
+        return ts

@@ -40,6 +40,7 @@ def init_db():
             sent_emails INTEGER DEFAULT 0,
             status TEXT DEFAULT 'running',
             log_file_path TEXT,
+            incoming_checker_enabled INTEGER DEFAULT 1,
             user_id INTEGER,
             FOREIGN KEY(account_id) REFERENCES accounts(id)
         )
@@ -117,6 +118,11 @@ def init_db():
             cur.execute(f"ALTER TABLE {table} ADD COLUMN {column} INTEGER")
         except sqlite3.OperationalError:
             pass
+
+    try:
+        cur.execute("ALTER TABLE tasks ADD COLUMN incoming_checker_enabled INTEGER DEFAULT 1")
+    except sqlite3.OperationalError:
+        pass
 
     conn.commit()
     conn.close()
