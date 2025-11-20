@@ -47,7 +47,7 @@ log = logging.getLogger("BOT")
 # ---------------------------------------------------------
 #  BOT
 # ---------------------------------------------------------
-API_TOKEN = "8153409500:AAG8SBAE8wr8QxyOsza6LkIsPxVNS4GTr_M"
+API_TOKEN = "8441011368:AAGsbBZZWkEhkxsnzCCcoi6nbGC1WDcT9mU"
 bot = Bot(API_TOKEN)
 dp = Dispatcher(bot, storage=MemoryStorage())
 
@@ -369,7 +369,7 @@ async def inbox_view(call: types.CallbackQuery):
     body = incoming.get("body_full") or incoming.get("body_preview") or "Без текста"
     text = (
         f"📩 Письмо | {incoming['from_email']}\n\n"
-        f"🔗 {_format_link(adlink)}\n"
+        f"🔗 {_format_link(adlink)}\n\n"
         f"🕒 Ответ получен: {_format_timestamp(incoming.get('received_at'))}\n\n"
         f"💬 Текст сообщения:\n\n{_escape_html(body)}"
     )
@@ -464,7 +464,7 @@ async def smtp_check(email):
 def send_sync(to, subject, text, acc, attachments=None):
     try:
         msg = MIMEMultipart()
-        msg["From"] = acc["email"]
+        msg["From"] = acc["name"]
         msg["To"] = to
         msg["Subject"] = subject
 
@@ -521,7 +521,7 @@ DELIVERABILITY FIRST (VERY IMPORTANT):
 - Keep tone neutral, friendly and human — avoid hype, salesy language, all caps, slogans, or multiple exclamation marks.
 - No links, no URLs, no phone numbers, no prices, no discounts, no emojis.
 - Write 35–80 words, in plain text sentences (no bullet points or lists).
-- Vary sentence structure; avoid repetition and template-like phrasing. Avoid repeating the same sentence order across messages.
+- Vary sentence structure; avoid repetition and template-like phrasing.
 
 AVAILABILITY QUESTION (MANDATORY):
 - Include ONE unique, natural availability question that is NOT a standard wording like:
@@ -547,10 +547,10 @@ Use EXACT format (do not change it):
 "Enquiry about {title} | Carousell"
 
 EMAIL MESSAGE TO SELLER "{seller}":
-- Must mention that you came across the item on Carousell, but vary the phrasing so it does not sound copied between messages.
+- Must mention that you came across the item on Carousell.
 - Must include a UNIQUE availability question (not a template).
 - Must include a UNIQUE personal comment about the item.
-- Mix sentence lengths and opening styles (sometimes start with the comment, other times with the question) to avoid structural sameness.
+- Please contact via Telegram @miialing
 - Must end with the buyer name: {acc_name}
 
 FORMAT:
@@ -1021,7 +1021,7 @@ async def check_inboxes():
 
                     text = (
                         f"📩 Новое письмо | {msg_data['from_email']}\n\n"
-                        f"🔗 {_format_link(adlink)}\n"
+                        f"🔗 {_format_link(adlink)}\n\n"
                         f"🕒 Ответ получен: {_format_timestamp(msg_data.get('received_at'))}\n\n"
                         f"💬 Текст сообщения:\n\n{_escape_html(msg_data.get('body') or msg_data['preview'] or 'Без текста')}"
                     )
@@ -1077,18 +1077,16 @@ async def show_history(call: types.CallbackQuery):
     else:
         lines = [
             f"📜 История | {email_addr}",
-            "",
-            f"🔗 {_format_link(last_adlink_by_email(email_addr, call.from_user.id))}",
-            "",
+            f"🔗 {_format_link(last_adlink_by_email(email_addr, call.from_user.id))}"
         ]
 
         for h in history:
-            icon = "🦣" if h["direction"] == "outgoing" else "👤"
+            icon = "👤" if h["direction"] == "outgoing" else "🦣"
             body_text = (h["body"] or "(пусто)").strip()
             display_body = "Изображение" if body_text.lower() == "изображение" else body_text
             lines.append(f"{icon} [{_format_timestamp(h['created_at'])}] {_escape_html(display_body)}")
 
-        text = "\n".join(lines) if lines else "История пуста."
+        text = "\n\n".join(lines) if lines else "История пуста."
         await call.message.answer(
             text,
             parse_mode="HTML",
