@@ -6,6 +6,8 @@ import imaplib
 import email
 import os
 import tempfile
+import html
+from email import encoders
 from email.header import decode_header
 from email.utils import parsedate_to_datetime
 from datetime import datetime, timezone
@@ -13,6 +15,9 @@ import aiohttp
 import dns.resolver
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+from email.mime.image import MIMEImage
+from email.mime.base import MIMEBase
+from mimetypes import guess_type
 
 from aiogram import Bot, Dispatcher, types
 from aiogram.contrib.fsm_storage.memory import MemoryStorage
@@ -63,6 +68,17 @@ def _paginate(items, page, per_page):
     return items[start:end], page, total_pages
 
 
+def _format_link(adlink):
+    if not adlink:
+        return "Ссылка не найдена"
+    safe_link = html.escape(adlink, quote=True)
+    return f"<a href=\"{safe_link}\">Ссылка на объявление</a>"
+
+
+def _escape_html(text: str) -> str:
+    return html.escape(text or "")
+
+
 # ---------------------------------------------------------
 # /start
 # ---------------------------------------------------------
@@ -72,6 +88,16 @@ async def start_cmd(msg: types.Message):
     MAIN_CHAT_ID = msg.chat.id
     await msg.answer("Главное меню:", reply_markup=main_menu())
     log.info(f"/start от {msg.chat.id}")
+
+
+@dp.message_handler(lambda m: m.text and m.text.lower() == "отменить", state="*")
+async def cancel_action(msg: types.Message, state: FSMContext):
+    if await state.get_state() is None:
+        return await msg.answer("Нет активных действий.", reply_markup=types.ReplyKeyboardRemove())
+
+    await state.finish()
+    await msg.answer("Действие отменено.", reply_markup=types.ReplyKeyboardRemove())
+    await msg.answer("Главное меню:", reply_markup=main_menu())
 
 
 # ---------------------------------------------------------
@@ -113,6 +139,7 @@ async def accounts_page(call: types.CallbackQuery):
 async def add_acc_click(call: types.CallbackQuery):
     await AddAccount.email.set()
     await call.message.edit_text("Введите Gmail email:")
+    await call.message.answer("Ожидаю ввод...", reply_markup=cancel_keyboard())
 
 
 @dp.callback_query_handler(lambda c: c.data == "tasks")
@@ -185,6 +212,11 @@ async def inbox_page(call: types.CallbackQuery):
     await _render_inbox_page(call, page=page)
 
 
+@dp.callback_query_handler(lambda c: c.data == "inbox_back")
+async def inbox_back(call: types.CallbackQuery):
+    await _render_inbox_page(call, page=1)
+
+
 # ---------------------------------------------------------
 #  Добавление аккаунта
 # ---------------------------------------------------------
@@ -219,6 +251,7 @@ async def acc_set_proxy(msg, state):
     )
 
     log.info(f"Добавлен аккаунт {data['email']}")
+    await msg.answer("Аккаунт добавлен!", reply_markup=types.ReplyKeyboardRemove())
     await msg.answer("Аккаунт добавлен!", reply_markup=main_menu())
     await state.finish()
 
@@ -230,11 +263,13 @@ async def acc_set_proxy(msg, state):
 async def set_token_click(call):
     await SetToken.token.set()
     await call.message.edit_text("Введите AI Token:")
+    await call.message.answer("Ожидаю ввод...", reply_markup=cancel_keyboard())
 
 
 @dp.message_handler(state=SetToken.token)
 async def save_token(msg, state):
     set_ai_token(msg.text)
+    await msg.answer("AI Token сохранён!", reply_markup=types.ReplyKeyboardRemove())
     await msg.answer("AI Token сохранён!", reply_markup=main_menu())
     await state.finish()
 
@@ -243,6 +278,7 @@ async def save_token(msg, state):
 async def set_delay_click(call):
     await SetDelay.delay.set()
     await call.message.edit_text("Введите задержку в секундах:")
+    await call.message.answer("Ожидаю ввод...", reply_markup=cancel_keyboard())
 
 
 @dp.message_handler(state=SetDelay.delay)
@@ -256,6 +292,7 @@ async def save_delay(msg, state):
         return await msg.answer("Задержка не может быть отрицательной.")
 
     set_delay(d)
+    await msg.answer("Задержка сохранена!", reply_markup=types.ReplyKeyboardRemove())
     await msg.answer("Задержка сохранена!", reply_markup=main_menu())
     await state.finish()
 
@@ -308,12 +345,17 @@ async def inbox_view(call: types.CallbackQuery):
     body = incoming.get("body_full") or incoming.get("body_preview") or "Без текста"
     text = (
         f"📩 Письмо | {incoming['from_email']}\n\n"
-        f"🔗 {adlink or 'Ссылка не найдена'}\n"
+        f"🔗 {_format_link(adlink)}\n"
         f"🕒 Ответ получен: {_format_timestamp(incoming.get('received_at'))}\n\n"
-        f"💬 Текст сообщения:\n\n{body}"
+        f"💬 Текст сообщения:\n\n{_escape_html(body)}"
     )
 
-    await call.message.edit_text(text, reply_markup=incoming_actions(incoming_id))
+    await call.message.edit_text(
+        text,
+        reply_markup=incoming_actions(incoming_id),
+        parse_mode="HTML",
+        disable_web_page_preview=True,
+    )
 
 
 # ---------------------------------------------------------
@@ -393,14 +435,33 @@ async def smtp_check(email):
 # ---------------------------------------------------------
 #  Email sending
 # ---------------------------------------------------------
-def send_sync(to, subject, text, acc):
+def send_sync(to, subject, text, acc, attachments=None):
     try:
         msg = MIMEMultipart()
         msg["From"] = acc["email"]
         msg["To"] = to
         msg["Subject"] = subject
 
-        msg.attach(MIMEText(text, "plain"))
+        msg.attach(MIMEText(text or "", "plain"))
+
+        for attachment in attachments or []:
+            with open(attachment["path"], "rb") as f:
+                payload = f.read()
+
+            mime_type, _ = guess_type(attachment["filename"])
+            if mime_type and mime_type.startswith("image/"):
+                part = MIMEImage(payload, name=attachment["filename"])
+            else:
+                part = MIMEBase("application", "octet-stream")
+                part.set_payload(payload)
+                encoders.encode_base64(part)
+                part.add_header(
+                    "Content-Disposition",
+                    "attachment",
+                    filename=attachment["filename"],
+                )
+
+            msg.attach(part)
 
         s = smtplib.SMTP("smtp.gmail.com", 587, timeout=10)
         s.starttls()
@@ -413,9 +474,9 @@ def send_sync(to, subject, text, acc):
         return False
 
 
-async def send_email(to, subject, text, acc):
+async def send_email(to, subject, text, acc, attachments=None):
     log.info(f"[SEND] → {to}")
-    return await asyncio.to_thread(send_sync, to, subject, text, acc)
+    return await asyncio.to_thread(send_sync, to, subject, text, acc, attachments)
 
 
 # ---------------------------------------------------------
@@ -809,16 +870,18 @@ async def check_inboxes():
 
                     text = (
                         f"📩 Новое письмо | {msg_data['from_email']}\n\n"
-                        f"🔗 {adlink or 'Ссылка не найдена'}\n"
+                        f"🔗 {_format_link(adlink)}\n"
                         f"🕒 Ответ получен: {_format_timestamp(msg_data.get('received_at'))}\n\n"
-                        f"💬 Текст сообщения:\n\n{msg_data.get('body') or msg_data['preview'] or 'Без текста'}"
+                        f"💬 Текст сообщения:\n\n{_escape_html(msg_data.get('body') or msg_data['preview'] or 'Без текста')}"
                     )
 
                     if MAIN_CHAT_ID:
                         await bot.send_message(
                             MAIN_CHAT_ID,
                             text,
-                            reply_markup=incoming_actions(incoming_id)
+                            reply_markup=incoming_actions(incoming_id),
+                            parse_mode="HTML",
+                            disable_web_page_preview=True,
                         )
             except Exception as e:
                 log.warning(f"[IMAP] Ошибка для {acc['email']}: {e}")
@@ -861,15 +924,26 @@ async def show_history(call: types.CallbackQuery):
         except Exception:
             pass
     else:
-        lines = []
+        lines = [
+            f"📜 История | {email_addr}",
+            "",
+            f"🔗 {_format_link(last_adlink_by_email(email_addr))}",
+            "",
+        ]
+
         for h in history:
-            icon = "➡️" if h["direction"] == "outgoing" else "⬅️"
-            snippet = (h["body"] or "").strip().replace("\n", " ")[:200]
-            adl = f" | {h['adlink']}" if h.get("adlink") else ""
-            lines.append(f"{icon} [{_format_timestamp(h['created_at'])}] {snippet or '(пусто)'}{adl}")
+            icon = "🦣" if h["direction"] == "outgoing" else "👤"
+            body_text = (h["body"] or "(пусто)").strip()
+            display_body = "Изображение" if body_text.lower() == "изображение" else body_text
+            lines.append(f"{icon} [{_format_timestamp(h['created_at'])}] {_escape_html(display_body)}")
 
         text = "\n".join(lines) if lines else "История пуста."
-        await call.message.answer(f"📜 История с {email_addr}:\n{text}")
+        await call.message.answer(
+            text,
+            parse_mode="HTML",
+            reply_markup=hide_message_keyboard(),
+            disable_web_page_preview=True,
+        )
 
 
 # ---------------------------------------------------------
@@ -889,7 +963,7 @@ async def start_reply(call: types.CallbackQuery, state: FSMContext):
     )
 
 
-@dp.message_handler(state=ReplyMessage.waiting_text)
+@dp.message_handler(state=ReplyMessage.waiting_text, content_types=["text", "photo", "document"])
 async def send_reply(msg: types.Message, state: FSMContext):
     data = await state.get_data()
     incoming = get_incoming(data.get("incoming_id"))
@@ -899,23 +973,63 @@ async def send_reply(msg: types.Message, state: FSMContext):
 
     acc = get_account(incoming["account_id"])
     subject = f"Re: {incoming['subject']}"
-    body = msg.text
+    attachments = []
+    logged_body = None
+    body = msg.text or msg.caption or ""
 
-    if await send_email(incoming["from_email"], subject, body, acc):
+    if msg.photo:
+        photo = msg.photo[-1]
+        file_info = await photo.get_file()
+        file_path = os.path.join(tempfile.gettempdir(), f"{photo.file_unique_id}.jpg")
+        await file_info.download(destination=file_path)
+        attachments.append({"path": file_path, "filename": os.path.basename(file_path)})
+        logged_body = "Изображение"
+    elif msg.document:
+        mime = msg.document.mime_type or ""
+        if not mime.startswith("image/"):
+            return await msg.answer("Можно отправлять только изображения в качестве вложений.")
+        file_info = await msg.document.get_file()
+        extension = os.path.splitext(msg.document.file_name or "attachment")[1] or ""
+        file_path = os.path.join(tempfile.gettempdir(), f"{msg.document.file_unique_id}{extension}")
+        await file_info.download(destination=file_path)
+        attachments.append({"path": file_path, "filename": msg.document.file_name or os.path.basename(file_path)})
+        logged_body = "Изображение"
+    else:
+        logged_body = body
+
+    try:
+        sent = await send_email(incoming["from_email"], subject, body, acc, attachments=attachments)
+    finally:
+        for att in attachments:
+            try:
+                os.remove(att["path"])
+            except Exception:
+                pass
+
+    if sent:
         add_conversation_message(
             acc["id"],
             incoming["from_email"],
             "outgoing",
             subject,
-            body,
+            logged_body,
             last_adlink_by_email(incoming["from_email"]),
             created_at=datetime.now(timezone.utc).isoformat()
         )
-        await msg.answer("Ответ отправлен!", reply_markup=main_menu())
+        await msg.answer("Ответ отправлен!", reply_markup=types.ReplyKeyboardRemove())
+        await msg.answer("Главное меню:", reply_markup=main_menu())
     else:
         await msg.answer("Не удалось отправить ответ.")
 
     await state.finish()
+
+
+@dp.callback_query_handler(lambda c: c.data == "hide_message")
+async def hide_message(call: types.CallbackQuery):
+    try:
+        await call.message.delete()
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------

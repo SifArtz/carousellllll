@@ -1,4 +1,9 @@
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import (
+    InlineKeyboardMarkup,
+    InlineKeyboardButton,
+    ReplyKeyboardMarkup,
+    KeyboardButton,
+)
 
 
 def main_menu():
@@ -97,6 +102,19 @@ def incoming_actions(incoming_id, include_history=True):
     kb.add(InlineKeyboardButton("💬 Ответить", callback_data=f"reply_{incoming_id}"))
     if include_history:
         kb.add(InlineKeyboardButton("📜 История", callback_data=f"hist_{incoming_id}"))
+    kb.add(InlineKeyboardButton("◀️ Назад", callback_data="inbox_back"))
+    return kb
+
+
+def cancel_keyboard():
+    kb = ReplyKeyboardMarkup(resize_keyboard=True)
+    kb.add(KeyboardButton("Отменить"))
+    return kb
+
+
+def hide_message_keyboard():
+    kb = InlineKeyboardMarkup()
+    kb.add(InlineKeyboardButton("🙈 Скрыть", callback_data="hide_message"))
     return kb
 
 
