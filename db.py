@@ -11,6 +11,7 @@ def init_db():
     cur.execute("""
         CREATE TABLE IF NOT EXISTS accounts (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
             email TEXT,
             app_password TEXT,
             name TEXT,
@@ -21,14 +22,13 @@ def init_db():
     # ---------------- SETTINGS ----------------
     cur.execute("""
         CREATE TABLE IF NOT EXISTS settings (
-            id INTEGER PRIMARY KEY,
+            user_id INTEGER PRIMARY KEY,
             ai_token TEXT DEFAULT '',
             send_delay INTEGER DEFAULT 1
         )
     """)
 
-    # Создаем единственную строку настроек если нет
-    cur.execute("INSERT OR IGNORE INTO settings (id) VALUES (1)")
+    # Создаем строку настроек для существующих пользователей позже через модели
 
     # ---------------- TASKS ----------------
     cur.execute("""
@@ -40,6 +40,7 @@ def init_db():
             sent_emails INTEGER DEFAULT 0,
             status TEXT DEFAULT 'running',
             log_file_path TEXT,
+            user_id INTEGER,
             FOREIGN KEY(account_id) REFERENCES accounts(id)
         )
     """)
@@ -54,6 +55,7 @@ def init_db():
             price TEXT,
             img_url TEXT,
             adlink TEXT,
+            user_id INTEGER,
             FOREIGN KEY(task_id) REFERENCES tasks(id)
         )
     """)
@@ -69,6 +71,7 @@ def init_db():
             body_preview TEXT,
             body_full TEXT,
             received_at TEXT,
+            user_id INTEGER,
             FOREIGN KEY(account_id) REFERENCES accounts(id)
         )
     """)
@@ -96,9 +99,24 @@ def init_db():
             adlink TEXT,
             created_at TEXT DEFAULT CURRENT_TIMESTAMP,
             message_id TEXT,
+            user_id INTEGER,
             FOREIGN KEY(account_id) REFERENCES accounts(id)
         )
     """)
+
+    # Дополнительные колонки для обратной совместимости
+    for table, column in [
+        ("accounts", "user_id"),
+        ("settings", "user_id"),
+        ("tasks", "user_id"),
+        ("logs", "user_id"),
+        ("incoming_messages", "user_id"),
+        ("conversation_messages", "user_id"),
+    ]:
+        try:
+            cur.execute(f"ALTER TABLE {table} ADD COLUMN {column} INTEGER")
+        except sqlite3.OperationalError:
+            pass
 
     conn.commit()
     conn.close()
