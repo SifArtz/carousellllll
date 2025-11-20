@@ -53,12 +53,17 @@ dp = Dispatcher(bot, storage=MemoryStorage())
 
 
 def _format_task_text(task):
+    checker_enabled = task.get("incoming_checker_enabled")
+    if checker_enabled is None:
+        checker_enabled = 1
+    checker_state = "включён" if checker_enabled else "выключен"
     return (
         f"🆔 Задача #{task['id']}\n"
         f"Статус: {task['status']}\n"
         f"Всего продавцов: {task['total_sellers']}\n"
         f"Валидных email: {task['valid_emails']}\n"
         f"Отправлено: {task['sent_emails']}\n"
+        f"Чекер входящих: {checker_state}\n"
     )
 
 
@@ -152,8 +157,7 @@ async def accounts_page(call: types.CallbackQuery):
 @dp.callback_query_handler(lambda c: c.data == "add_account")
 async def add_acc_click(call: types.CallbackQuery):
     await AddAccount.email.set()
-    await call.message.edit_text("Введите Gmail email:")
-    await call.message.answer("Ожидаю ввод...", reply_markup=cancel_keyboard())
+    await call.message.edit_text("Введите Gmail email:", reply_markup=cancel_keyboard())
 
 
 @dp.callback_query_handler(lambda c: c.data == "tasks")
@@ -277,8 +281,7 @@ async def acc_set_proxy(msg, state):
 @dp.callback_query_handler(lambda c: c.data == "set_token")
 async def set_token_click(call):
     await SetToken.token.set()
-    await call.message.edit_text("Введите AI Token:")
-    await call.message.answer("Ожидаю ввод...", reply_markup=cancel_keyboard())
+    await call.message.edit_text("Введите AI Token:", reply_markup=cancel_keyboard())
 
 
 @dp.message_handler(state=SetToken.token)
@@ -292,8 +295,7 @@ async def save_token(msg, state):
 @dp.callback_query_handler(lambda c: c.data == "set_delay")
 async def set_delay_click(call):
     await SetDelay.delay.set()
-    await call.message.edit_text("Введите задержку в секундах:")
-    await call.message.answer("Ожидаю ввод...", reply_markup=cancel_keyboard())
+    await call.message.edit_text("Введите задержку в секундах:", reply_markup=cancel_keyboard())
 
 
 @dp.message_handler(state=SetDelay.delay)
@@ -420,7 +422,8 @@ async def file_received(msg, state):
 
     task_id = create_task(acc_id, len(items), user_id)
     status_msg = await msg.answer(
-        f"Задача #{task_id} запущена. Обработка продавцов...", reply_markup=task_actions(task_id)
+        f"Задача #{task_id} запущена. Обработка продавцов...",
+        reply_markup=task_actions(task_id, checker_enabled=True)
     )
 
     asyncio.create_task(
@@ -668,12 +671,16 @@ async def run_task(task_id, acc_id, items, chat_id, status_chat_id=None, status_
             "total_sellers": len(items)
         })
 
+        checker_flag = task_state.get("incoming_checker_enabled")
+        if checker_flag is None:
+            checker_flag = 1
+
         try:
             await bot.edit_message_text(
                 text=text,
                 chat_id=status_chat_id,
                 message_id=status_msg_id,
-                reply_markup=task_actions(task_id)
+                reply_markup=task_actions(task_id, checker_enabled=bool(checker_flag))
             )
         except Exception:
             pass
@@ -764,6 +771,7 @@ async def run_task(task_id, acc_id, items, chat_id, status_chat_id=None, status_
     lambda c: c.data.startswith("task_")
     and not c.data.startswith("task_log_")
     and not c.data.endswith("_refresh")
+    and "toggle_checker" not in c.data
 )
 async def task_view(call):
     task_id = int(call.data.split("_")[1])
@@ -773,7 +781,14 @@ async def task_view(call):
 
     text = _format_task_text(task)
 
-    await call.message.edit_text(text, reply_markup=task_actions(task_id))
+    checker_flag = task.get("incoming_checker_enabled")
+    if checker_flag is None:
+        checker_flag = 1
+
+    await call.message.edit_text(
+        text,
+        reply_markup=task_actions(task_id, checker_enabled=bool(checker_flag))
+    )
 
 
 # ---------------------------------------------------------
@@ -788,10 +803,45 @@ async def refresh_task(call):
 
     text = _format_task_text(task)
 
+    checker_flag = task.get("incoming_checker_enabled")
+    if checker_flag is None:
+        checker_flag = 1
+
     try:
-        await call.message.edit_text(text, reply_markup=task_actions(task_id))
+        await call.message.edit_text(
+            text,
+            reply_markup=task_actions(task_id, checker_enabled=bool(checker_flag))
+        )
     except Exception:
         await call.answer("Нет обновлений", show_alert=False)
+
+
+@dp.callback_query_handler(lambda c: c.data.startswith("task_toggle_checker_"))
+async def toggle_task_checker(call: types.CallbackQuery):
+    task_id = int(call.data.split("_")[3])
+    task = get_task(task_id, call.from_user.id)
+    if not task:
+        return await call.answer("Задача не найдена", show_alert=True)
+
+    current_state = task.get("incoming_checker_enabled")
+    if current_state is None:
+        current_state = 1
+
+    new_state = not bool(current_state)
+    set_task_checker(task_id, new_state, call.from_user.id)
+    task["incoming_checker_enabled"] = int(new_state)
+
+    text = _format_task_text(task)
+
+    try:
+        await call.message.edit_text(
+            text,
+            reply_markup=task_actions(task_id, checker_enabled=new_state)
+        )
+    except Exception:
+        pass
+
+    await call.answer("Чекер включён" if new_state else "Чекер отключён")
 
 
 # ---------------------------------------------------------
@@ -935,6 +985,9 @@ async def check_inboxes():
         accounts = get_accounts()
         for acc in accounts:
             try:
+                if acc.get("user_id") and not user_has_enabled_checker(acc["user_id"]):
+                    continue
+
                 unseen = await asyncio.to_thread(fetch_unseen_messages, acc)
                 for msg_data in unseen:
                     if incoming_exists(msg_data["message_id"], acc.get("user_id")):
