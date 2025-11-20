@@ -512,38 +512,35 @@ async def ai_generate(title, seller, acc_name, user_id):
     token = get_settings(user_id)["ai_token"]
 
     prompt = f"""
-You are a professional copywriter specialising in generating highly unique, conversational and natural English messages for Carousell Singapore buyers.
+You are a professional copywriter specialising in low-spam, natural English outreach for Carousell Singapore buyers.
 
 GOAL:
 Create ONE fully original message that sounds like a real buyer on Carousell asking about a product.
 
-MANDATORY (VERY IMPORTANT):
-- The message MUST contain a question about availability, BUT it cannot be a standard phrasing like:
-  “Is this available?”, "Still available?", "Available?", "Is this still available?"
-- The availability question MUST be written in a unique, natural, human way each time.
-  Examples of ALLOWED styles:
+DELIVERABILITY FIRST (VERY IMPORTANT):
+- Keep tone neutral, friendly and human — avoid hype, salesy language, all caps, slogans, or multiple exclamation marks.
+- No links, no URLs, no phone numbers, no prices, no discounts, no emojis.
+- Write 35–80 words, in plain text sentences (no bullet points or lists).
+- Vary sentence structure; avoid repetition and template-like phrasing.
+
+AVAILABILITY QUESTION (MANDATORY):
+- Include ONE unique, natural availability question that is NOT a standard wording like:
+  “Is this available?”, "Still available?", "Available?", "Is this still available?".
+- Each time, craft a fresh, human variation such as:
   - "Just wanted to check if it's still up for grabs?"
   - "Are you still letting this go?"
   - "Is this item still on your list?"
-  You may create other unique forms — they MUST vary every time.
+  Create other unique forms each time.
 
-ALSO MANDATORY:
-- Add a small, natural comment about the item "{title}".
-  It must feel personal, curious or observational.
-  Examples:
-  - “It caught my eye because…”
-  - “Been looking for something similar…”
-  - “The condition looks nice from the photos…”
-  But do NOT reuse specific examples — generate new ones every time.
+PERSONAL COMMENT (MANDATORY):
+- Add a brief, personal remark about the item "{title}" that feels curious or observational (e.g., what caught your attention, condition, or fit for a need). Do not reuse sample wording; write something new each time.
 
 STRICT RULES:
 - NO generic marketplace templates.
 - NO robotic or repetitive structures.
-- NO short or lazy messages — make it feel genuinely human.
-- No bullet points, no lists.
 - Only ONE final message.
-- NO heavy Singlish (NO “lah”, “lor”, “leh”, “hor”), but a casual SG tone is ok.
-- Natural, friendly, polite, slightly casual.
+- NO heavy Singlish (NO “lah”, “lor”, “leh”, “hor”), but a light SG tone is ok.
+- Natural, polite, slightly casual.
 
 EMAIL SUBJECT:
 Use EXACT format (do not change it):
