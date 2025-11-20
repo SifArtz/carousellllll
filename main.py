@@ -553,47 +553,88 @@ async def send_email(to, subject, text, acc, attachments=None):
 # ---------------------------------------------------------
 # AI генерация
 # ---------------------------------------------------------
+DEFAULT_TELEGRAM_HANDLE = "@miialing"
+_TONE_HINTS = [
+    "friendly and concise",
+    "relaxed but curious",
+    "warm and upbeat",
+    "brief and practical",
+    "casual and to the point",
+    "neutral with a hint of enthusiasm",
+]
+_STYLE_HINTS = [
+    "sound like a real Carousell.sg buyer",
+    "keep it conversational and human",
+    "make it feel spontaneous, not templated",
+    "write like a quick chat message",
+    "stay light and informal",
+    "keep the flow natural and varied",
+]
+_STRUCTURE_HINTS = [
+    "start by casually mentioning the item",
+    "open with a short greeting to the seller",
+    "jump straight into the question, then mention yourself",
+    "begin with who you are, then ask",
+    "skip formalities and keep it direct",
+    "use a tiny greeting before the question",
+    "reference the Carousell listing first",
+]
+
 DEFAULT_AI_PROMPT = """
-ROLE: You craft ultra-unique, low-spam English outreach emails for Carousell Singapore buyers.
+ROLE: You generate short, natural buyer outreach for Carousell Singapore.
 
-OBJECTIVE: Generate ONE message (subject + body) that feels like a real buyer asking about the item.
+OBJECTIVE: Produce a unique subject and body that sound like a real buyer asking about the item.
 
-ANTI-SPAM & NATURAL TONE:
-- Conversational, polite, slightly casual. No hype, no templates, no slogans, no emojis, no all-caps, no discounts.
-- 40–90 words for the body, plain text only (no lists, bullets, Markdown, code fences, or extra keys).
-- Vary sentence structure and phrasing every time so messages and subjects do NOT look machine-generated.
+STYLE DIALS (apply implicitly):
+- Tone: {tone_hint}
+- Writing style: {style_hint}
+- Structure: {structure_hint}
 
-SUBJECT (must be different on every run):
-- Create a fresh, human subject in 7–12 words, weaving in "{title}" naturally.
-- Do NOT use fixed formats like "Enquiry about {title} | Carousell" or repeat the same pattern across requests.
-- Keep it neutral (no spammy words, no phone/links/prices).
+SUBJECT (must be new every run):
+- 5–10 words, flowing naturally with "{title}".
+- Avoid fixed templates, separators, or repeated patterns.
+- Keep it neutral—no prices, links, or spammy terms.
 
 BODY TO SELLER "{seller}":
-- Say you spotted the item on Carousell.
-- Include ONE unique availability question that is NOT a cliché such as "Still available?" or "Is this available?". Write a new phrasing each time.
-- Add ONE unique personal remark about "{title}" (what caught attention, condition, fit for a need, etc.) with varied wording each run.
-- Provide Telegram handle: @miialing.
-- End the message with the buyer name: {acc_name}.
+- Mention you found it on Carousell.
+- Ask about availability with a fresh phrasing (not "Still available?" or similar clichés).
+- Add one personal remark about "{title}" (what caught your eye, condition, suitability, etc.) with varied wording.
+- Invite a quick reply on Telegram: {telegram_handle}, phrased differently each time and sounding casual.
+- Sign off with buyer name: {acc_name}.
+- Keep 25–60 words, plain text only (no lists, code fences, Markdown, or extra keys).
 
 OUTPUT FORMAT (strict):
-- Return ONLY valid JSON with these exact keys and no extra text:
 {
   "subject": "...unique subject...",
   "message": "...unique body..."
 }
-Ensure the JSON is not wrapped in code fences and contains no additional fields.
+Return ONLY the JSON without extra commentary.
 """
 
 
 def _build_prompt(user_id, title, seller, acc_name):
     settings = get_settings(user_id)
     prompt_template = settings.get("ai_prompt") or DEFAULT_AI_PROMPT
+
+    tone_hint = random.choice(_TONE_HINTS)
+    style_hint = random.choice(_STYLE_HINTS)
+    structure_hint = random.choice(_STRUCTURE_HINTS)
+
+    format_args = {
+        "title": title,
+        "seller": seller,
+        "acc_name": acc_name,
+        "tone_hint": tone_hint,
+        "style_hint": style_hint,
+        "structure_hint": structure_hint,
+        "telegram_handle": DEFAULT_TELEGRAM_HANDLE,
+    }
+
     try:
-        return prompt_template.format(title=title, seller=seller, acc_name=acc_name)
+        return prompt_template.format(**format_args)
     except Exception as e:
         log.error(f"[AI] Ошибка форматирования промта: {e}")
-        return DEFAULT_AI_PROMPT.format(title=title, seller=seller, acc_name=acc_name)
-
+        return DEFAULT_AI_PROMPT.format(**format_args)
 
 async def ai_generate(title, seller, acc_name, user_id):
     token = get_settings(user_id)["ai_token"]
