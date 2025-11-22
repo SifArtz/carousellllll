@@ -89,7 +89,7 @@ async def document_handler(message: types.Message):
     await message.answer("Файл получен, начинаю обработку...")
 
     with tempfile.NamedTemporaryFile(delete=False) as tmp:
-        await document.download(destination_file=tmp)
+        await document.download(destination=tmp)
         input_path = tmp.name
 
     rows = _parse_lines(input_path)
