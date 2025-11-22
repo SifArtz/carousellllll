@@ -125,13 +125,6 @@ async def cancel_action_inline(call: types.CallbackQuery, state: FSMContext):
 @dp.callback_query_handler(lambda c: c.data == "start_task")
 async def click_start_task(call: types.CallbackQuery):
     user_id = call.from_user.id
-    settings = get_settings(user_id)
-    if not settings.get("ai_token"):
-        return await call.message.edit_text(
-            "⚠️ Сначала укажите AI Token в настройках.",
-            reply_markup=main_menu()
-        )
-
     accounts = get_accounts(user_id)
     if not accounts:
         return await call.message.edit_text(
@@ -339,24 +332,10 @@ async def save_prompt(msg, state):
 
 @dp.callback_query_handler(lambda c: c.data == "generate_prompt")
 async def generate_prompt_example(call: types.CallbackQuery):
-    settings = get_settings(call.from_user.id)
-    if not settings.get("ai_token"):
-        return await call.message.edit_text(
-            "⚠️ Сначала укажите AI Token в настройках.",
-            reply_markup=settings_menu(),
-        )
-
-    await call.answer("Генерируем пример...")
-    sample_title = "Example listing"
-    sample_seller = "seller"
-    sample_acc_name = "Demo Buyer"
-    generated = await ai_generate(sample_title, sample_seller, sample_acc_name, call.from_user.id)
-
-    text = (
-        f"Тема: {generated.get('subject', '')}\n\n"
-        f"{generated.get('message', '')}"
+    await call.message.edit_text(
+        "ИИ генерация отключена. Загрузите .txt с текстами писем и заголовок будет подставлен из title.",
+        reply_markup=settings_menu(),
     )
-    await call.message.edit_text(text or "Не удалось сгенерировать", reply_markup=settings_menu())
 
 
 # ---------------------------------------------------------
@@ -399,8 +378,10 @@ async def start_task(call, state):
         return await call.answer("Аккаунт не найден", show_alert=True)
     await state.update_data(acc_id=acc_id, user_id=call.from_user.id)
 
-    await UploadTaskFile.waiting_file.set()
-    await call.message.edit_text("Отправьте .txt файл с JSON данными.")
+    await UploadTaskFile.waiting_sellers.set()
+    await call.message.edit_text(
+        "Отправьте .txt файл с JSON данными продавцов (title, price, img_url, seller)."
+    )
 
 
 @dp.callback_query_handler(lambda c: c.data.startswith("inbox_view_"))
@@ -428,11 +409,22 @@ async def inbox_view(call: types.CallbackQuery):
 
 
 # ---------------------------------------------------------
-#   Получение файла
+#   Получение файлов задачи
 # ---------------------------------------------------------
-@dp.message_handler(content_types=["document"], state=UploadTaskFile.waiting_file)
-async def file_received(msg, state):
+def _parse_message_templates(file_path: str):
+    with open(file_path, "r", encoding="utf-8-sig") as f:
+        raw_lines = f.read().splitlines()
 
+    templates = []
+    for line in raw_lines:
+        cleaned = re.sub(r"^\s*\d+\.\s*", "", line.strip())
+        if cleaned:
+            templates.append(cleaned)
+    return templates
+
+
+@dp.message_handler(content_types=["document"], state=UploadTaskFile.waiting_sellers)
+async def sellers_file_received(msg, state: FSMContext):
     file_info = await msg.document.get_file()
     path = f"./{msg.document.file_name}"
     await file_info.download(destination=path)
@@ -455,24 +447,61 @@ async def file_received(msg, state):
             "price": v["price"],
             "img_url": v["img_url"],
             "seller": v["seller"],
-            "adlink": adlink
+            "adlink": adlink,
         })
 
     if not items:
         return await msg.answer("Файл пустой, не нашлось продавцов для обработки.")
 
+    await state.update_data(items=items)
+    await UploadTaskFile.waiting_templates.set()
+    await msg.answer(
+        "Файл продавцов принят. Теперь отправьте .txt файл с текстами писем (каждый текст на новой строке или с нумерацией)."
+    )
+
+
+@dp.message_handler(content_types=["document"], state=UploadTaskFile.waiting_templates)
+async def templates_file_received(msg, state: FSMContext):
+    file_info = await msg.document.get_file()
+    path = f"./{msg.document.file_name}"
+    await file_info.download(destination=path)
+
+    try:
+        templates = _parse_message_templates(path)
+    except Exception:
+        return await msg.answer("Не удалось прочитать файл с текстами. Убедитесь, что это .txt.")
+
+    if not templates:
+        return await msg.answer("В файле не найдено текстов писем. Добавьте строки и отправьте файл снова.")
+
     st = await state.get_data()
+    items = st.get("items") or []
+
+    if len(templates) < len(items):
+        return await msg.answer(
+            f"Нужно минимум {len(items)} текстов для писем, а в файле найдено только {len(templates)}. Отправьте другой файл."
+        )
+
     acc_id = st["acc_id"]
     user_id = st["user_id"]
 
     task_id = create_task(acc_id, len(items), user_id)
     status_msg = await msg.answer(
         f"Задача #{task_id} запущена. Обработка продавцов...",
-        reply_markup=task_actions(task_id, checker_enabled=True)
+        reply_markup=task_actions(task_id, checker_enabled=True),
     )
 
     asyncio.create_task(
-        run_task(task_id, acc_id, items, msg.chat.id, status_msg.chat.id, status_msg.message_id, user_id)
+        run_task(
+            task_id,
+            acc_id,
+            items,
+            msg.chat.id,
+            status_msg.chat.id,
+            status_msg.message_id,
+            user_id,
+            message_templates=templates,
+        )
     )
 
     await state.finish()
@@ -753,7 +782,18 @@ async def ai_generate(title, seller, acc_name, user_id):
 # ---------------------------------------------------------
 
 
-async def run_task(task_id, acc_id, items, chat_id, status_chat_id=None, status_msg_id=None, user_id=None):
+async def run_task(
+    task_id,
+    acc_id,
+    items,
+    chat_id,
+    status_chat_id=None,
+    status_msg_id=None,
+    user_id=None,
+    message_templates=None,
+):
+
+    message_templates = list(message_templates or [])
 
     acc = get_account(acc_id, user_id)
     if not acc:
@@ -832,7 +872,7 @@ async def run_task(task_id, acc_id, items, chat_id, status_chat_id=None, status_
     await update_progress("running")
 
     with open(log_path, "w", encoding="utf-8") as f:
-        for item in items:
+        for idx, item in enumerate(items):
             email = f"{item['seller']}@gmail.com"
             log.info(f"[TASK] Обработка продавца {email}")
 
@@ -849,13 +889,14 @@ async def run_task(task_id, acc_id, items, chat_id, status_chat_id=None, status_
             valid += 1
 
             try:
-                ai_out = await ai_generate(item["title"], item["seller"], acc["name"], user_id)
-            except Exception as e:
-                log.error(f"[TASK] AI ошибка для {email}: {e}")
-                continue
+                message = message_templates[idx]
+            except IndexError:
+                log.error(
+                    f"[TASK] Недостаточно текстов писем: {len(message_templates)} для {len(items)} продавцов"
+                )
+                break
 
-            subject = ai_out.get("subject") or f"Question about {item['title']}"
-            message = ai_out.get("message") or "Hello! Is this still available?"
+            subject = item["title"]
 
             line = f"{email} | {item['title']} | {item['price']} | {item['img_url']} | {item['adlink']}\n"
             f.write(line)

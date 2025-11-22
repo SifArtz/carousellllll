@@ -22,7 +22,8 @@ class SetPrompt(StatesGroup):
 
 
 class UploadTaskFile(StatesGroup):
-    waiting_file = State()
+    waiting_sellers = State()
+    waiting_templates = State()
 
 
 class ReplyMessage(StatesGroup):
